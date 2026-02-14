@@ -1,0 +1,45 @@
+training:
+  batch_size: 16
+  learning_rate: 1e-4
+  epochs: 100
+  num_workers: 4
+  val_split: 0.1
+
+effects:
+  saturator:
+    dataset_path: "dataset/saturator"
+    param_names: ["Drive", "Dry/Wet", "Type", "WS Curve", "WS Depth"]
+  
+  reverb:
+    dataset_path: "dataset/reverb"
+    param_names: ["Decay Time", "Size", "Dry/Wet"]
+
+  operator:
+    dataset_path: "dataset/operator"
+    param_names: [
+      "Transpose", "Osc-A Wave", "Filter Freq", "Filter Res",
+      "Fe Amount", "Fe Attack", "Fe Decay", "Fe Sustain", "Fe Release",
+      "Pe Amount", "Pe Decay", "Pe Peak",
+      "Ae Attack", "Ae Decay", "Ae Sustain", "Ae Release"
+    ]
+  
+  eq8:
+    dataset_path: "dataset/eq8"
+    param_names: [
+      "Bond 1 Freq", "Band 1 Gain",
+      "Band 2 Freq", "Band 2 Gain", "Band 2 Q",
+      "Band 3 Freq", "Band 3 Gain", "Band 3 Q",
+      "Band 4 Freq", "Band 4 Gain"
+    ]
+
+  ott:
+    dataset_path: "dataset/ott"
+    param_names: ["Amount", "Time", "Output Gain"]
+
+  phaser:
+    dataset_path: "dataset/phaser"
+    param_names: ["Frequency", "Feedback", "Amount"]
+
+wandb:
+  project: "neural-unmixer-v3"
+  entity: "joelbae" # Optional, can be overridden by env param

@@ -1,0 +1,128 @@
+Project Genesis: The Neural Un-Mixer v2.0
+Technical Specification for Inverse Signal Chain Estimation
+
+Planning Document
+
+February 2026
+
+1 System Objective
+
+The Neural Un-Mixer is an end-to-end MLOps system designed for Inverse Parameter Estimation. It
+decomposes a ”Wet” audio sample x into its constituent synthesizer parameters θsynth and effect chain
+configurations θf x, such that a re-rendering of these parameters in Ableton Live 12 minimizes the perceptual
+distance to the original source.
+
+2 Mathematical Framework
+
+The project treats audio reconstruction as a Non-Linear Inverse Problem. We define the forward mapping
+G(θ) as the Ableton Signal Chain. Our goal is to find the inverse mapping F (x) ≈ G−1(x).
+
+2.1 Multi-Task Architecture
+
+The model employs a shared feature extractor (Encoder) with N specialized heads:
+
+• MDN Head: Outputs parameters πi, µi, σi for the mixture distribution of continuous knobs.
+
+• Classification Head: P (y|x) for discrete wavetable and filter indices.
+
+• Hyperbolic Sequence Decoder: Unlike standard Euclidean decoders, this module embeds the effect
+chain S = (f x1, f x2, ..., f x8) into Hyperbolic space (Poincar´e ball). This geometry naturally
+captures the hierarchical and non-commutative nature of signal paths (where order matters), resolving
+the combinatorial explosion of effect permutations [1].
+
+2.2 Hybrid Loss Function
+
+To address the multimodal nature of the parameter space (Non-Identifiability), we replace standard MSE
+with Negative Log-Likelihood (NLL). Crucially, to maintain end-to-end differentiability through the proxy,
+we employ the Reparameterization Trick during the spectral loss calculation.
+
+Ltotal = λp − log
+
+(cid:124)
+
+(cid:32) K
+(cid:88)
+
+k=1
+
+πk(x)N (θgt|µk(x), σk(x))
+
+(cid:123)(cid:122)
+NLL Loss (MDN)
+
+(cid:33)
+
+(cid:125)
+
++λs LSpectral(Gproxy(ˆθsample), x)
+(cid:125)
+
+(cid:123)(cid:122)
+Perceptual Loss
+
+(cid:124)
+
+(1)
+
+Where ˆθsample is drawn from the predicted distribution p(θ|x) using a differentiable sampling strategy
+(e.g., Gumbel-Softmax for discrete, Gaussian reparameterization for continuous) to allow gradient flow back
+to the encoder.
+
+1
+
+2.3 Inference-Time Finetuning (ITF)
+
+To address the ”Proxy Gap” (discrepancy between the neural proxy and the real Ableton engine), we
+implement an ITF stage during inference [2]. After the initial prediction ˆθinit, we freeze the proxy decoder
+weights ϕ∗ and refine the input parameters θ for the specific test sample xt:
+
+θf inal = argminθ (LSpectral(Gproxy(θ), xt) + λBLregularization)
+
+(2)
+
+This allows the model to ”overfit” the specific audio sample at runtime, significantly reducing reconstruction
+error.
+
+3 Statistical Guardrails & Optimization
+
+Given the high-dimensional and non-convex nature of the parameter space, we implement the following:
+
+1. Mixture Density Networks (MDN): The model predicts a probability distribution p(θ|x) rather
+than a point estimate to handle the one-to-many mapping problem where multiple settings create
+identical sounds.
+
+2. GCWD Optimization: Standard Adam optimizers often fail on Spectral Loss landscapes due to
+ill-conditioning (gradients ranging from 1040 to 10−40). We utilize Gradient Clipping with Weight
+Decay (GCWD) to prevent floating-point overflow and stabilize convergence [3].
+
+3. Curriculum Learning: Sequential training phases: Dry Synth → Non-Linear FX → Full Chain.
+
+4 Technical Stack
+
+• Engine: PyTorch, Torchaudio, AbletonOSC.
+
+• Differentiable DSP: Google Magenta DDSP (ported to PyTorch).
+
+• Optimization: Geoopt (for Riemannian/Hyperbolic optimization).
+
+• Data/Ops: DVC (Versioning), MLflow (Tracking), FastAPI (Inference).
+
+• Domain: Ableton Live 12 Native Devices (Wavetable + Big 8 FX).
+
+5 References
+
+1. Wada, A., et al. ”Hyperbolic Embeddings for Order-Aware Classification of Audio Effect Chains.”
+
+DAFx25, 2025.
+
+2. Barkan, O., et al. ”InverSynth II: Sound Matching Via Self-Supervised Synthesizer-Proxy and Inference-
+
+Time Finetuning.” ISMIR, 2023.
+
+3. Combes, P., et al. ”Gradient Clipping Improves Neural Network Optimization for Perceptual Sound
+
+Matching.” Eusipco, 2025.
+
+2
+
+

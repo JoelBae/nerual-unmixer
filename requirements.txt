@@ -1,0 +1,13 @@
+torch
+torchaudio
+numpy
+scipy
+geoopt
+fastapi
+uvicorn
+mlflow
+dvc
+python-osc
+pylive
+sounddevice
+pysoundfile
