@@ -110,9 +110,16 @@ class ParameterRandomizer:
             {
                 "track_index": 0, "device_index": 3,
                 "params": [
-                    {"index": 6, "name": "Amount", "min": 0.0, "max": 1.0}, 
-                    {"index": 7, "name": "Time", "min": 0.0, "max": 1.0}, # Normalized (0-1)
-                    {"index": 5, "name": "Output Gain", "min": -24.0, "max": 24.0} # RAW dB
+                    {"index": 6, "name": "Amount", "min": 0.0, "max": 1.0}, # Dry/Wet
+                    
+                    # Thresholds (Raw dB: -60 to 0)
+                    {"index": 17, "name": "Abv Thresh L", "min": -60.0, "max": 0.0},
+                    {"index": 18, "name": "Abv Thresh M", "min": -60.0, "max": 0.0},
+                    {"index": 19, "name": "Abv Thresh H", "min": -60.0, "max": 0.0},
+                    
+                    {"index": 20, "name": "Blw Thresh L", "min": -60.0, "max": 0.0},
+                    {"index": 21, "name": "Blw Thresh M", "min": -60.0, "max": 0.0},
+                    {"index": 22, "name": "Blw Thresh H", "min": -60.0, "max": 0.0},
                 ]
             },
              # 4. PHASER (Device Index 4)

@@ -34,7 +34,7 @@ effects:
 
   ott:
     dataset_path: "dataset/ott"
-    param_names: ["Amount", "Time", "Output Gain"]
+    param_names: ["Amount", "Abv Thresh L", "Abv Thresh M", "Abv Thresh H", "Blw Thresh L", "Blw Thresh M", "Blw Thresh H"]
 
   phaser:
     dataset_path: "dataset/phaser"

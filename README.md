@@ -23,12 +23,20 @@ The embedding $z$ is split into three specialized prediction heads:
 ### 3. The Modular Proxy System (New in V3)
 Instead of a monolithic "Black Box" synthesizer, V3 uses a library of **Independent Differentiable Neural Proxies**:
 *   **Training Strategy**: Each proxy is trained **separately** on its own dataset. This ensures high-fidelity simulation of each specific effect without interference from others.
-*   **Concept**: We train a small, specialized TCN (Temporal Convolutional Network) for each individual audio effect. The currently supported effects are:
-    *   **Saturator** (Non-linear distortion)
-    *   **EQ Eight** (4-band parametric EQ)
-    *   **OTT** (Multiband compression)
-    *   **Phaser** (Modulation)
-    *   **Reverb** (Spatial processing)
+*   **Concept**: We use specialized Differentiable Digital Signal Processing (DDSP) and Neural Network architectures tailored to each specific device:
+    *   **Operator (Instrument Proxy)**: A fully mathematical, differentiable Additive Synthesizer. 
+        *   Uses 64 parallel sine-wave harmonics.
+        *   Phase integration via `torch.cumsum` supports time-varying pitch modulation (Pitch Envelopes).
+        *   Includes differentiable mathematical ADSR Envelopes for volume, pitch, and filter.
+        *   Uses a "Frequency Response" volume-reduction trick for the Low-Pass Filter, avoiding non-differentiable slow time-domain recursion.
+        *   Includes a tiny MLP (`OscWaveMapper`) acting as a neural translation layer to map a single `Osc-A Wave` dial (0-127) into 64 distinct harmonic amplitudes.
+        *   Assumes a fixed base pitch (C3) shifted entirely by the Ableton "Transpose" dial.
+    *   **Audio Effects (TCN Proxies)**: We train a small, specialized Temporal Convolutional Network (TCN) for each individual audio effect:
+        *   **Saturator** (Non-linear distortion)
+        *   **EQ Eight** (4-band parametric EQ)
+        *   **OTT** (Multiband compression)
+        *   **Phaser** (Modulation)
+        *   **Reverb** (Spatial processing)
 *   **Dynamic Chaining**: At runtime, these modules are dynamically assembled into a computation graph that matches the effect chain predicted by the Decoder.
     *   *Example*: If the decoder predicts `[Saturator, Reverb]`, the signal flows `Oscillator -> ProxySaturator -> ProxyReverb -> Output`.
 *   **Benefits**: This allows gradients to flow from the output audio, through the specific effect chain, back to the encoder, enabling the model to learn the nuances of how effects interact.
