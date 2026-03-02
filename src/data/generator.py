@@ -76,8 +76,8 @@ class ParameterRandomizer:
                 "params": [
                     {"index": 1, "name": "Drive", "min": 0.0, "max": 1.0},
                     # Output (Index 10) removed to keep fixed at 0dB (User Request)
-                    # Type (Index 3) is an Enum (0-6)
-                    # 0=Analog, 1=Soft, 2=Med, 3=Hard, 4=Sinoid, 5=Digi, 6=Wave
+                    # Type (Index 3) is an Enum (0-7)
+                    # 0=Analog, 1=Soft Sine, 2=Bass, 3=Medium, 4=Hard, 5=Sinoid, 6=Digi, 7=Waveshaper
                     {"index": 3, "name": "Type", "min": 0.0, "max": 6.0}, 
                     {"index": 15, "name": "WS Curve", "min": 0.0, "max": 1.0},
                     {"index": 18, "name": "WS Depth", "min": 0.0, "max": 1.0}
@@ -110,7 +110,7 @@ class ParameterRandomizer:
             {
                 "track_index": 0, "device_index": 3,
                 "params": [
-                    {"index": 6, "name": "Amount", "min": 0.0, "max": 1.0}, # Dry/Wet
+                    {"index": 6, "name": "Amount", "min": 1.0, "max": 1.0}, # Fixed 100% wet
                     
                     # Thresholds (Raw dB: -60 to 0)
                     {"index": 17, "name": "Abv Thresh L", "min": -60.0, "max": 0.0},
@@ -122,24 +122,14 @@ class ParameterRandomizer:
                     {"index": 22, "name": "Blw Thresh H", "min": -60.0, "max": 0.0},
                 ]
             },
-             # 4. PHASER (Device Index 4)
+            # 4. REVERB (Device Index 4 - was 5)
             {
                 "track_index": 0, "device_index": 4,
                 "params": [
-                    {"index": 3, "name": "Frequency", "min": 0.0, "max": 1.0},
-                    {"index": 25, "name": "Feedback", "min": 0.0, "max": 0.95}, 
-                    {"index": 1, "name": "Amount", "min": 0.0, "max": 1.0}
-                ]
-            },
-            # 5. REVERB (Device Index 5)
-            {
-                "track_index": 0, "device_index": 5,
-                "params": [
-                    # Decay Time appears to be RAW Seconds (scaling non-linearly)
-                    # Safe range: 0.3s (room) to 6.0s (hall)
-                    {"index": 20, "name": "Decay Time", "min": 0.3, "max": 6.0}, 
+                    # Probed: 0.4 ≈ 2.0s actual decay in Ableton
+                    {"index": 20, "name": "Decay Time", "min": 0.05, "max": 0.4}, 
                     {"index": 26, "name": "Size", "min": 0.0, "max": 1.0}, 
-                    {"index": 32, "name": "Dry/Wet", "min": 0.0, "max": 0.5} 
+                    {"index": 32, "name": "Dry/Wet", "min": 1.0, "max": 1.0}  # Fixed 100% wet
                 ]
             }
         ]
@@ -178,20 +168,31 @@ class ParameterRandomizer:
             "saturator": 1,
             "eq8": 2,
             "ott": 3,
-            "phaser": 4,
-            "reverb": 5
+            "reverb": 4
         }
         return name_map.get(name.lower())
 
 def record_audio(duration, sample_rate=44100):
     """
-    Records audio from the default input device.
+    Records audio from the BlackHole virtual audio cable.
     Moved heavy imports inside to allow verification script to run light.
     """
     import sounddevice as sd
     
-    # print(f"Recording for {duration} seconds...")
-    recording = sd.rec(int(duration * sample_rate), samplerate=sample_rate, channels=2, blocking=True)
+    # Auto-detect BlackHole device
+    devices = sd.query_devices()
+    blackhole_idx = None
+    for i, dev in enumerate(devices):
+        if "BlackHole" in dev["name"]:
+            blackhole_idx = i
+            break
+            
+    if blackhole_idx is None:
+        print("Warning: BlackHole virtual audio cable not found. Falling back to default system input.")
+        recording = sd.rec(int(duration * sample_rate), samplerate=sample_rate, channels=2, blocking=True)
+    else:
+        recording = sd.rec(int(duration * sample_rate), samplerate=sample_rate, channels=2, blocking=True, device=blackhole_idx)
+        
     return recording
 
 def generate_dataset(num_samples: int, output_dir: str, duration: float = 2.0, sample_rate: int = 44100, effect_filter: str = None):
@@ -215,11 +216,11 @@ def generate_dataset(num_samples: int, output_dir: str, duration: float = 2.0, s
         if effect_filter.lower() == "operator":
             target_d_idx = 0
             print(f"--- Single Effect Mode: Operator (Device 0) ---")
-            print("--- Bypassing ALL effects (Device 1-5) ---")
-            # Enable Operator (0), Disable ALL others (1-5)
+            print("--- Bypassing ALL effects (Device 1-4) ---")
+            # Enable Operator (0), Disable ALL others (1-4)
             # Note: Device 0 (Rack) usually stays enabled, we just toggle its children or bypass the chain.
             # Here we assume we just bypass downstream effects.
-            for d_idx in range(1, 6):
+            for d_idx in range(1, 5):
                 # Track 0, Device d_idx, Param 0 (Device On), Value 0.0 (Off)
                 client.set_track_parameter(0, d_idx, 0, 0.0)
             time.sleep(0.05)
@@ -232,7 +233,7 @@ def generate_dataset(num_samples: int, output_dir: str, duration: float = 2.0, s
             
             # Setup: Enable Target, Disable Others (Best Effort)
             # We use Parameter 0 ("Device On") to toggle, as set_device_enabled might fail
-            for d_idx in range(1, 6):
+            for d_idx in range(1, 5):
                 is_target = (d_idx == target_d_idx)
                 val = 1.0 if is_target else 0.0
                 # Track 0, Device d_idx, Param 0 (Device On), Value

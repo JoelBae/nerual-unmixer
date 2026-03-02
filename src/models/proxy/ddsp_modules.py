@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import numpy as np
+import os
 
 class HarmonicOscillator(nn.Module):
     """
@@ -58,17 +59,13 @@ class DifferentiableADSR(nn.Module):
         num_samples: Int - Total audio length to generate
         """
         batch_size = attack.shape[0]
-        t = torch.arange(num_samples, device=attack.device, dtype=torch.float32)
-        t = t.unsqueeze(0).expand(batch_size, -1) / self.sample_rate
+        t = torch.arange(num_samples, device=attack.device, dtype=attack.dtype)
+        # Reshape for broadcasting: (batch, 1) and (1, time) -> (batch, time)
+        t = t.view(1, -1) / self.sample_rate
 
-        a = attack.expand(-1, num_samples)
-        d = decay.expand(-1, num_samples)
-        s = sustain.expand(-1, num_samples)
-        r = release.expand(-1, num_samples)
-
-        attack_env = torch.clamp(t / (a + 1e-8), 0.0, 1.0)
-        decay_env = 1.0 - (1.0 - s) * torch.clamp((t - a) / (d + 1e-8), 0.0, 1.0)
-        release_env = 1.0 - torch.clamp((t - note_off_time) / (r + 1e-8), 0.0, 1.0)
+        attack_env = torch.clamp(t / (attack + 1e-8), 0.0, 1.0)
+        decay_env = 1.0 - (1.0 - sustain) * torch.clamp((t - attack) / (decay + 1e-8), 0.0, 1.0)
+        release_env = 1.0 - torch.clamp((t - note_off_time) / (release + 1e-8), 0.0, 1.0)
 
         envelope = attack_env * decay_env * release_env
         envelope = torch.clamp(envelope, 0.0, 1.0)
@@ -90,36 +87,53 @@ class DifferentiablePitchEnvelope(nn.Module):
         """
         batch_size = amount.shape[0]
         
-        t = torch.arange(num_samples, device=amount.device, dtype=torch.float32)
-        t = t.unsqueeze(0).expand(batch_size, -1) / self.sample_rate
+        t = torch.arange(num_samples, device=amount.device, dtype=amount.dtype)
+        t = t.view(1, -1) / self.sample_rate
         
-        d = decay.expand(-1, num_samples)
-        
-        decay_curve = 1.0 - torch.clamp(t / (d + 1e-8), 0.0, 1.0)
+        # decay_curve: (batch, time)
+        decay_curve = 1.0 - torch.clamp(t / (decay + 1e-8), 0.0, 1.0)
         
         max_semitone_jump = peak * amount 
-        pitch_offset_semitones = decay_curve * max_semitone_jump.expand(-1, num_samples)
+        pitch_offset_semitones = decay_curve * max_semitone_jump.view(batch_size, 1)
         
         return pitch_offset_semitones
 
 class OscWaveMapper(nn.Module):
     """
-    A small neural network that maps a single 'Osc-A Wave' dial value (0.0 to 1.0)
-    into 64 harmonic amplitudes (0.0 to 1.0) to control the Additive Synthesizer.
+    A Differentiable Lookup Table that maps 'Osc-A Wave' dial value (0.0 to 1.0)
+    into 64 harmonic amplitudes using linear interpolation.
     """
-    def __init__(self, num_harmonics=64, hidden_dim=32):
+    def __init__(self, num_harmonics=64, num_entries=128):
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(1, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, num_harmonics),
-            nn.Sigmoid()
-        )
+        self.num_harmonics = num_harmonics
+        self.num_entries = num_entries
+        # Initialize with Sine wave (first harmonic only)
+        table = torch.zeros(num_entries, num_harmonics)
+        table[:, 0] = 1.0
+        self.register_buffer("table", table)
 
     def forward(self, wave_dial_normalized):
-        return self.net(wave_dial_normalized)
+        """
+        wave_dial_normalized: (batch, 1) - from 0.0 to 1.0
+        """
+        # Map 0-1 to 0-(num_entries-1)
+        idx_float = wave_dial_normalized * (self.num_entries - 1)
+        
+        idx_lower = torch.floor(idx_float).long()
+        idx_upper = torch.ceil(idx_float).long()
+        
+        alpha = idx_float - idx_lower.float()
+        
+        # Clamp indices
+        idx_lower = torch.clamp(idx_lower, 0, self.num_entries - 1)
+        idx_upper = torch.clamp(idx_upper, 0, self.num_entries - 1)
+        
+        # Gather (lookup)
+        lower_vals = self.table[idx_lower.squeeze(1)]
+        upper_vals = self.table[idx_upper.squeeze(1)]
+        
+        # Linear Interpolation (Lerp)
+        return lower_vals * (1.0 - alpha) + upper_vals * alpha
 
 class DifferentiableAdditiveFilter(nn.Module):
     """
@@ -131,9 +145,13 @@ class DifferentiableAdditiveFilter(nn.Module):
         super().__init__()
         
     def forward(self, all_frequencies, cutoff_frequencies, resonance=0.707):
+        # resonance: (batch, 1) or float
+        if torch.is_tensor(resonance) and resonance.dim() == 2:
+            resonance = resonance.unsqueeze(2) # (batch, 1, 1)
+            
         f_ratio = all_frequencies / (cutoff_frequencies + 1e-8)
 
-        denominator = torch.sqrt((1.0 - f_ratio**2)**2 + (f_ratio / resonance)**2 + 1e-8)
+        denominator = torch.sqrt((1.0 - f_ratio**2)**2 + (f_ratio / (resonance + 1e-8))**2 + 1e-8)
         filter_gain = 1.0 / denominator
         
         return filter_gain
@@ -172,7 +190,19 @@ class OperatorProxy(nn.Module):
         self.filter_env = DifferentiableFilterEnvelope(sample_rate)
         self.wave_mapper = OscWaveMapper(num_harmonics=num_harmonics)
 
+    def load_wave_table(self, path="checkpoints/wave_table.pt"):
+        """Loads analyzed harmonic table."""
+        if os.path.exists(path):
+            self.wave_mapper.table = torch.load(path, map_location='cpu')
+            print(f"✅ Loaded Wave Lookup Table from {path}")
+        else:
+            print(f"⚠️  Wave Table not found at {path}. Using default sine wave.")
+
     def forward(self, params, note_off_time=1.0, num_samples=88200):
+        # Ensure 2D params
+        if params.dim() == 1:
+            params = params.unsqueeze(0)
+        
         batch_size = params.shape[0]
 
         # Transpose
@@ -219,4 +249,9 @@ class OperatorProxy(nn.Module):
         volume_envelope = self.amplitude_env(attack, decay, sustain, release, note_off_time, num_samples)
 
         final_audio = raw_audio * volume_envelope
+        
+        # Ensure (B, 2, T) for consistency with other proxies
+        if final_audio.dim() == 2:
+            final_audio = final_audio.unsqueeze(1).repeat(1, 2, 1)
+            
         return final_audio
