@@ -88,6 +88,6 @@ class DynamicsLoss(nn.Module):
         # Using a larger stride to speed up CPU/GPU sync
         env_x = F.avg_pool1d(x.abs(), kernel_size=512, stride=256)
         env_y = F.avg_pool1d(y.abs(), kernel_size=512, stride=256)
-        loss_env = F.l1_loss(env_x, env_y) * 5.0
+        loss_env = F.l1_loss(env_x, env_y) * 1.0
         
         return loss_spec + loss_env

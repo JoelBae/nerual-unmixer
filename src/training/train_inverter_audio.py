@@ -17,92 +17,101 @@ from src.models.proxy.chain import ProxyChainer
 from src.models.losses import DynamicsLoss
 from src.utils.normalization import denormalize_params
 
+def assemble_full_params(mdn_out, wave_idx, batch_size, device):
+    """Helper to construct the 63-param vector for the chainer."""
+    # Create a placeholder for the full parameter vector
+    full_params = torch.zeros(batch_size, 63, device=device)
+    
+    # Operator (15 cont + 1 cat)
+    full_params[:, 0] = mdn_out[:, 0]            # Transpose
+    full_params[:, 1] = wave_idx.float()         # Ground truth wave index
+    full_params[:, 2:16] = mdn_out[:, 1:15]      # Filter, Envs...
+    
+    # Saturator (5 cont)
+    full_params[:, 16:21] = mdn_out[:, 15:20]
+    
+    # EQ Eight (32 cont)
+    full_params[:, 21:53] = mdn_out[:, 20:52]
+    
+    # OTT (7 cont)
+    full_params[:, 53:60] = mdn_out[:, 52:59]
+    
+    # Reverb (3 cont)
+    full_params[:, 60:63] = mdn_out[:, 59:62]
+    
+    return full_params
+
+
 def train_inverter_audio(args):
-    print(f"--- Strategy B: Training Inverter with Audio Loss for {args.effect} ---")
+    print(f"--- Training Full Inverter with Composite Audio + Categorical Loss ---")
     device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
     print(f"Using device: {device}")
     
     # 1. Dataset & Loader
-    # Using 4 workers and pin_memory for performance
-    dataset = NeuralProxyDataset(
-        effect_name=args.effect, 
-        dataset_dir=args.dataset_dir, 
-        split="train",
-        preload=False
-    )
-    val_dataset = NeuralProxyDataset(
-        effect_name=args.effect, 
-        dataset_dir=args.dataset_dir, 
-        split="val",
-        preload=False
-    )
+    dataset = NeuralProxyDataset(effect_name=args.effect, dataset_dir=args.dataset_dir, split="train", preload=False)
+    val_dataset = NeuralProxyDataset(effect_name=args.effect, dataset_dir=args.dataset_dir, split="val", preload=False)
     
     train_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=True)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4, pin_memory=True)
     
     # 2. Models
-    # Encoder
     model = NeuralInverter(latent_dim=args.latent_dim).to(device)
     if args.resume_encoder and os.path.exists(args.resume_encoder):
-        model.load_state_dict(torch.load(args.resume_encoder, map_location=device, weights_only=True))
+        model.load_state_dict(torch.load(args.resume_encoder, map_location=device))
         print(f"✅ Resumed Encoder from {args.resume_encoder}")
     
-    # Proxy (Differentiable DSL Chain)
     chainer = ProxyChainer().to(device)
-    chainer.load_checkpoints() # Loads wave_table.pt, ott_proxy.pt, etc.
+    chainer.load_checkpoints()
     chainer.eval()
     for p in chainer.parameters():
         p.requires_grad = False
     
-    # 3. Optimizer & Loss
+    # 3. Optimizer & Losses
     optimizer = optim.AdamW(model.parameters(), lr=args.lr)
-    criterion = DynamicsLoss().to(device)
+    loss_audio_fn = DynamicsLoss().to(device)
+    loss_wave_fn = nn.CrossEntropyLoss()
+    loss_order_fn = nn.CrossEntropyLoss()
     
-    # 4. Training Loop
+    # Loss weights
+    w_audio = args.w_audio
+    w_wave = args.w_wave
+    w_order = args.w_order
+    
     best_val_loss = float('inf')
     
     for epoch in range(args.epochs):
         model.train()
-        train_loss = 0
+        total_loss, total_audio_loss, total_wave_loss, total_order_loss = 0, 0, 0, 0
         
         progress_bar = tqdm(train_loader, desc=f"Epoch {epoch+1}")
-        for dry_audio, true_params, target_audio in progress_bar:
-            dry_audio = dry_audio.to(device)
+        for _, true_params, target_audio, true_order_idx in progress_bar:
             target_audio = target_audio.to(device)
-            # true_params is only used for logging/ref if needed, not for loss in Strategy B
+            true_params = true_params.to(device)
+            true_order_idx = true_order_idx.to(device)
             
             optimizer.zero_grad()
             
-            # Step 1: Predict Params (MDN Means)
             outputs = model(target_audio)
             
-            # Use the mean of the most likely Gaussian for the most stable "predicted knobs"
-            # Shape of mu: (batch, num_gaussians, out_features)
-            # Shape of pi: (batch, num_gaussians)
-            best_g = torch.argmax(outputs['pi'], dim=1) # (batch,)
-            mu_best = outputs['mu'][torch.arange(target_audio.shape[0]), best_g] # (batch, 22)
-            
-            # Step 2: Denormalize to Ableton Ranges
-            # Need to assemble full 23-param vector (Transpose, Wave, ... OTT)
-            # Strategy B focuses on OTT for now since we have the proxy.
-            # We assume Wave and Transpose are either known or we just use the predicted ones.
-            # Note: Wave is index 1, skip it for denorm loop in a simplified way
-            
-            full_params_norm = torch.zeros(target_audio.shape[0], 23, device=device)
-            full_params_norm[:, 0] = mu_best[:, 0] # Transpose
-            # Wave logits are categorical, we take argmax but it's not differentiable.
-            # However, the OTT proxy doesn't use index 1, so it's fine.
-            full_params_norm[:, 1] = torch.argmax(outputs['wave_logits'], dim=1).float()
-            full_params_norm[:, 2:23] = mu_best[:, 1:] # Filter, Envs, OTT
-            
+            # --- Categorical Losses ---
+            true_wave_idx = true_params[:, 1].long()
+            loss_wave = loss_wave_fn(outputs['wave_logits'], true_wave_idx)
+            loss_order = loss_order_fn(outputs['order_logits'], true_order_idx)
+
+            # --- Audio Reconstruction Loss ---
+            pi, mu = outputs['pi'], outputs['mu']
+            best_g = torch.argmax(pi, dim=1)
+            mu_best = mu[torch.arange(target_audio.shape[0]), best_g]
+
+            full_params_norm = assemble_full_params(mu_best, true_wave_idx, target_audio.shape[0], device)
             pred_params_raw = denormalize_params(full_params_norm)
             
-            # Step 3: Differentiable Pass through Proxy Chain (Operator -> OTT)
-            # The chainer internally handles Generator (Op) vs Processor (OTT)
-            reconstructed_audio = chainer.forward_flat(pred_params_raw, sequence=['operator', 'ott'])
+            reconstructed_audio = chainer.forward_flat(pred_params_raw, order_idx=true_order_idx)
             
-            # Step 4: Audio-Domain Loss
-            loss = criterion(reconstructed_audio, target_audio)
+            loss_audio = loss_audio_fn(reconstructed_audio, target_audio)
+            
+            # --- Combined Loss ---
+            loss = (w_audio * loss_audio) + (w_wave * loss_wave) + (w_order * loss_order)
             
             if torch.isnan(loss):
                 continue
@@ -110,53 +119,76 @@ def train_inverter_audio(args):
             loss.backward()
             optimizer.step()
             
-            train_loss += loss.item()
-            progress_bar.set_postfix({'AudioLoss': f"{loss.item():.4f}"})
+            total_loss += loss.item()
+            total_audio_loss += loss_audio.item()
+            total_wave_loss += loss_wave.item()
+            total_order_loss += loss_order.item()
+            
+            progress_bar.set_postfix({
+                'L': f"{loss.item():.3f}",
+                'L_aud': f"{loss_audio.item():.3f}",
+                'L_wav': f"{loss_wave.item():.3f}",
+                'L_ord': f"{loss_order.item():.3f}"
+            })
             
         # 5. Validation
         model.eval()
-        val_loss = 0
+        val_loss, val_audio_loss, val_wave_loss, val_order_loss = 0, 0, 0, 0
         with torch.no_grad():
-            for dry_audio, true_params, target_audio in val_loader:
-                dry_audio = dry_audio.to(device)
+            for _, true_params, target_audio, true_order_idx in val_loader:
                 target_audio = target_audio.to(device)
-                
+                true_params = true_params.to(device)
+                true_order_idx = true_order_idx.to(device)
+
                 outputs = model(target_audio)
-                best_g = torch.argmax(outputs['pi'], dim=1)
-                mu_best = outputs['mu'][torch.arange(target_audio.shape[0]), best_g]
                 
-                full_params_norm = torch.zeros(target_audio.shape[0], 23, device=device)
-                full_params_norm[:, 0] = mu_best[:, 0]
-                full_params_norm[:, 1] = torch.argmax(outputs['wave_logits'], dim=1).float()
-                full_params_norm[:, 2:23] = mu_best[:, 1:]
+                true_wave_idx = true_params[:, 1].long()
+                loss_wave = loss_wave_fn(outputs['wave_logits'], true_wave_idx)
+                loss_order = loss_order_fn(outputs['order_logits'], true_order_idx)
+                
+                pi, mu = outputs['pi'], outputs['mu']
+                best_g = torch.argmax(pi, dim=1)
+                mu_best = mu[torch.arange(target_audio.shape[0]), best_g]
+                full_params_norm = assemble_full_params(mu_best, true_wave_idx, target_audio.shape[0], device)
                 pred_params_raw = denormalize_params(full_params_norm)
+                reconstructed_audio = chainer.forward_flat(pred_params_raw, order_idx=true_order_idx)
+                loss_audio = loss_audio_fn(reconstructed_audio, target_audio)
                 
-                reconstructed_audio = chainer.forward_flat(pred_params_raw, sequence=['operator', 'ott'])
-                loss = criterion(reconstructed_audio, target_audio)
+                loss = (w_audio * loss_audio) + (w_wave * loss_wave) + (w_order * loss_order)
+
                 val_loss += loss.item()
-                
-        avg_train = train_loss / len(train_loader)
+                val_audio_loss += loss_audio.item()
+                val_wave_loss += loss_wave.item()
+                val_order_loss += loss_order.item()
+
+        avg_train = total_loss / len(train_loader)
         avg_val = val_loss / len(val_loader)
         
-        print(f"Epoch {epoch+1}: Train Audio Loss = {avg_train:.4f} | Val Audio Loss = {avg_val:.4f}")
+        print(f"\nEpoch {epoch+1}: Train Loss={avg_train:.4f} | Val Loss={avg_val:.4f}")
+        print(f"  Components (Val): Audio={val_audio_loss/len(val_loader):.4f}, Wave={val_wave_loss/len(val_loader):.4f}, Order={val_order_loss/len(val_loader):.4f}")
         
-        # Save best model
         if avg_val < best_val_loss:
             best_val_loss = avg_val
             torch.save(model.state_dict(), f"checkpoints/inverter_{args.effect}_audio_best.pt")
             print("🌟 New best audio inverter saved!")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--effect", type=str, default="ott")
-    parser.add_argument("--dataset_dir", type=str, default="dataset/ott")
-    parser.add_argument("--batch_size", type=int, default=32)
-    parser.add_argument("--epochs", type=int, default=100)
-    parser.add_argument("--lr", type=float, default=1e-4) # Lower LR for Strategy B
+    parser = argparse.ArgumentParser(description="Train the full audio inverter model.")
+    parser.add_argument("--effect", type=str, default="full_chain", help="Must be 'full_chain' for this script.")
+    parser.add_argument("--dataset_dir", type=str, default="dataset/full_chain", help="Path to the dataset.")
+    parser.add_argument("--batch_size", type=int, default=16)
+    parser.add_argument("--epochs", type=int, default=200)
+    parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--latent_dim", type=int, default=512)
-    parser.add_argument("--proxy_path", type=str, default="checkpoints/ott_proxy.pt")
     parser.add_argument("--resume_encoder", type=str, default=None)
+    parser.add_argument("--w_audio", type=float, default=1.0, help="Weight for audio reconstruction loss.")
+    parser.add_argument("--w_wave", type=float, default=0.5, help="Weight for categorical wave prediction loss.")
+    parser.add_argument("--w_order", type=float, default=0.5, help="Weight for categorical order prediction loss.")
     
     args = parser.parse_args()
+    if args.effect != "full_chain":
+        print("Warning: This script is intended for the 'full_chain' effect. Results may be unexpected.")
+        args.dataset_dir = f"dataset/{args.effect}"
+
     os.makedirs("checkpoints", exist_ok=True)
     train_inverter_audio(args)

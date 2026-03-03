@@ -35,14 +35,20 @@ class ProxyChainer(nn.Module):
         # 2. OTT Weights
         ott_path = os.path.join(checkpoint_dir, "ott_proxy.pt")
         if os.path.exists(ott_path):
-            self.devices['ott'].load_state_dict(torch.load(ott_path, map_location='cpu'))
-            print(f"✅ Loaded OTT Proxy from {ott_path}")
+            try:
+                self.devices['ott'].load_state_dict(torch.load(ott_path, map_location='cpu'))
+                print(f"✅ Loaded OTT Proxy from {ott_path}")
+            except Exception as e:
+                print(f"⚠️ Failed to load OTT Proxy weights (schema mismatch?): {e}")
             
         # 3. Reverb Weights
         reverb_path = os.path.join(checkpoint_dir, "reverb_proxy.pt")
         if os.path.exists(reverb_path):
-            self.devices['reverb'].load_state_dict(torch.load(reverb_path, map_location='cpu'))
-            print(f"✅ Loaded Reverb Proxy from {reverb_path}")
+            try:
+                self.devices['reverb'].load_state_dict(torch.load(reverb_path, map_location='cpu'))
+                print(f"✅ Loaded Reverb Proxy from {reverb_path}")
+            except Exception as e:
+                print(f"⚠️ Failed to load Reverb Proxy weights: {e}")
 
     def forward(self, params_dict, sequence=None):
         """
@@ -87,13 +93,14 @@ class ProxyChainer(nn.Module):
             order_idx: (Batch,) LongTensor - optional, overrides sequence
             sequence: List of strings - optional, default static if order_idx is None
         """
-        # Map indices (Batch, 62) -> dict
+        # Map indices (Batch, 63) -> dict
+        # Layout: Operator(16), Saturator(5), EQ8(32), OTT(7), Reverb(3)
         params_dict = {
             'operator':  flat_params[:, 0:16],
-            'saturator': flat_params[:, 16:20],
-            'eq8':       flat_params[:, 20:52],
-            'ott':       flat_params[:, 52:59],
-            'reverb':    flat_params[:, 59:62]
+            'saturator': flat_params[:, 16:21],
+            'eq8':       flat_params[:, 21:53],
+            'ott':       flat_params[:, 53:60],
+            'reverb':    flat_params[:, 60:63]
         }
         
         # If order_idx is provided, decode it into a sequence

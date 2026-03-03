@@ -42,18 +42,9 @@ class EQEightProxy(nn.Module):
         self.register_buffer('z_inv', torch.exp(-1j * omega))
         self.register_buffer('z_inv2', torch.exp(-2j * omega))
     
-    def _biquad_coeffs(self, filter_type, freq_hz, gain_db, q):
+    def _biquad_coeffs(self, freq_hz, gain_db, q):
         """
-        Compute biquad filter coefficients using the Audio EQ Cookbook.
-        
-        Args:
-            filter_type: (batch,) int tensor — which filter type (0-7)
-            freq_hz:     (batch,) float — center/corner frequency in Hz
-            gain_db:     (batch,) float — gain in dB (for shelf/bell only)
-            q:           (batch,) float — Q factor
-            
-        Returns:
-            b0, b1, b2, a0, a1, a2: each (batch,) float
+        Compute biquad filter coefficients for ALL filter types (0-7).
         """
         # Clamp to safe DSP ranges
         freq_hz = torch.clamp(freq_hz, 20.0, self.sr / 2 - 100)
@@ -65,100 +56,97 @@ class EQEightProxy(nn.Module):
         cos_w0 = torch.cos(w0)
         sin_w0 = torch.sin(w0)
         alpha = sin_w0 / (2.0 * q)
-        A = torch.pow(10.0, gain_db / 40.0)     # sqrt(linear gain)
+        A = torch.pow(10.0, gain_db / 40.0)
         sqrt_A = torch.sqrt(torch.clamp(A, min=1e-6))
         
-        # Default: unity pass-through (b0=1, a0=1, rest=0)
-        b0 = torch.ones_like(freq_hz)
-        b1 = torch.zeros_like(freq_hz)
-        b2 = torch.zeros_like(freq_hz)
-        a0 = torch.ones_like(freq_hz)
-        a1 = torch.zeros_like(freq_hz)
-        a2 = torch.zeros_like(freq_hz)
+        batch = freq_hz.shape[0]
         
-        # ---- Highpass (Low Cut types 0 and 1) ----
-        mask = (filter_type == 0) | (filter_type == 1)
-        b0 = torch.where(mask, (1 + cos_w0) / 2, b0)
-        b1 = torch.where(mask, -(1 + cos_w0), b1)
-        b2 = torch.where(mask, (1 + cos_w0) / 2, b2)
-        a0 = torch.where(mask, 1 + alpha, a0)
-        a1 = torch.where(mask, -2 * cos_w0, a1)
-        a2 = torch.where(mask, 1 - alpha, a2)
+        # We'll build a (batch, 8 types, 6 coeffs) tensor
+        coeffs = torch.zeros(batch, 8, 6, device=freq_hz.device)
         
-        # ---- Lowpass (High Cut types 6 and 7) ----
-        mask = (filter_type == 6) | (filter_type == 7)
-        b0 = torch.where(mask, (1 - cos_w0) / 2, b0)
-        b1 = torch.where(mask, 1 - cos_w0, b1)
-        b2 = torch.where(mask, (1 - cos_w0) / 2, b2)
-        a0 = torch.where(mask, 1 + alpha, a0)
-        a1 = torch.where(mask, -2 * cos_w0, a1)
-        a2 = torch.where(mask, 1 - alpha, a2)
+        # 0 & 1: Highpass (Low Cut)
+        coeffs[:, 0:2, 0] = (1 + cos_w0).unsqueeze(1) / 2 # b0
+        coeffs[:, 0:2, 1] = -(1 + cos_w0).unsqueeze(1)   # b1
+        coeffs[:, 0:2, 2] = (1 + cos_w0).unsqueeze(1) / 2 # b2
+        coeffs[:, 0:2, 3] = (1 + alpha).unsqueeze(1)      # a0
+        coeffs[:, 0:2, 4] = (-2 * cos_w0).unsqueeze(1)    # a1
+        coeffs[:, 0:2, 5] = (1 - alpha).unsqueeze(1)      # a2
         
-        # ---- Low Shelf (type 2) ----
-        mask = (filter_type == 2)
-        b0 = torch.where(mask, A * ((A+1) - (A-1)*cos_w0 + 2*sqrt_A*alpha), b0)
-        b1 = torch.where(mask, 2*A * ((A-1) - (A+1)*cos_w0), b1)
-        b2 = torch.where(mask, A * ((A+1) - (A-1)*cos_w0 - 2*sqrt_A*alpha), b2)
-        a0 = torch.where(mask, (A+1) + (A-1)*cos_w0 + 2*sqrt_A*alpha, a0)
-        a1 = torch.where(mask, -2 * ((A-1) + (A+1)*cos_w0), a1)
-        a2 = torch.where(mask, (A+1) + (A-1)*cos_w0 - 2*sqrt_A*alpha, a2)
+        # 2: Low Shelf
+        coeffs[:, 2, 0] = A * ((A+1) - (A-1)*cos_w0 + 2*sqrt_A*alpha)
+        coeffs[:, 2, 1] = 2*A * ((A-1) - (A+1)*cos_w0)
+        coeffs[:, 2, 2] = A * ((A+1) - (A-1)*cos_w0 - 2*sqrt_A*alpha)
+        coeffs[:, 2, 3] = (A+1) + (A-1)*cos_w0 + 2*sqrt_A*alpha
+        coeffs[:, 2, 4] = -2 * ((A-1) + (A+1)*cos_w0)
+        coeffs[:, 2, 5] = (A+1) + (A-1)*cos_w0 - 2*sqrt_A*alpha
         
-        # ---- Bell / Peaking EQ (type 3) ----
-        mask = (filter_type == 3)
-        b0 = torch.where(mask, 1 + alpha * A, b0)
-        b1 = torch.where(mask, -2 * cos_w0, b1)
-        b2 = torch.where(mask, 1 - alpha * A, b2)
-        a0 = torch.where(mask, 1 + alpha / A, a0)
-        a1 = torch.where(mask, -2 * cos_w0, a1)
-        a2 = torch.where(mask, 1 - alpha / A, a2)
+        # 3: Bell
+        coeffs[:, 3, 0] = 1 + alpha * A
+        coeffs[:, 3, 1] = -2 * cos_w0
+        coeffs[:, 3, 2] = 1 - alpha * A
+        coeffs[:, 3, 3] = 1 + alpha / A
+        coeffs[:, 3, 4] = -2 * cos_w0
+        coeffs[:, 3, 5] = 1 - alpha / A
         
-        # ---- Notch (type 4) ----
-        mask = (filter_type == 4)
-        b0 = torch.where(mask, torch.ones_like(freq_hz), b0)
-        b1 = torch.where(mask, -2 * cos_w0, b1)
-        b2 = torch.where(mask, torch.ones_like(freq_hz), b2)
-        a0 = torch.where(mask, 1 + alpha, a0)
-        a1 = torch.where(mask, -2 * cos_w0, a1)
-        a2 = torch.where(mask, 1 - alpha, a2)
+        # 4: Notch
+        coeffs[:, 4, 0] = 1.0
+        coeffs[:, 4, 1] = -2 * cos_w0
+        coeffs[:, 4, 2] = 1.0
+        coeffs[:, 4, 3] = 1 + alpha
+        coeffs[:, 4, 4] = -2 * cos_w0
+        coeffs[:, 4, 5] = 1 - alpha
+
+        # 5: High Shelf
+        coeffs[:, 5, 0] = A * ((A+1) + (A-1)*cos_w0 + 2*sqrt_A*alpha)
+        coeffs[:, 5, 1] = -2*A * ((A-1) + (A+1)*cos_w0)
+        coeffs[:, 5, 2] = A * ((A+1) + (A-1)*cos_w0 - 2*sqrt_A*alpha)
+        coeffs[:, 5, 3] = (A+1) - (A-1)*cos_w0 + 2*sqrt_A*alpha
+        coeffs[:, 5, 4] = 2 * ((A-1) - (A+1)*cos_w0)
+        coeffs[:, 5, 5] = (A+1) - (A-1)*cos_w0 - 2*sqrt_A*alpha
+
+        # 6 & 7: Lowpass (High Cut)
+        coeffs[:, 6:8, 0] = (1 - cos_w0).unsqueeze(1) / 2
+        coeffs[:, 6:8, 1] = (1 - cos_w0).unsqueeze(1)
+        coeffs[:, 6:8, 2] = (1 - cos_w0).unsqueeze(1) / 2
+        coeffs[:, 6:8, 3] = (1 + alpha).unsqueeze(1)
+        coeffs[:, 6:8, 4] = (-2 * cos_w0).unsqueeze(1)
+        coeffs[:, 6:8, 5] = (1 - alpha).unsqueeze(1)
         
-        # ---- High Shelf (type 5) ----
-        mask = (filter_type == 5)
-        b0 = torch.where(mask, A * ((A+1) + (A-1)*cos_w0 + 2*sqrt_A*alpha), b0)
-        b1 = torch.where(mask, -2*A * ((A-1) + (A+1)*cos_w0), b1)
-        b2 = torch.where(mask, A * ((A+1) + (A-1)*cos_w0 - 2*sqrt_A*alpha), b2)
-        a0 = torch.where(mask, (A+1) - (A-1)*cos_w0 + 2*sqrt_A*alpha, a0)
-        a1 = torch.where(mask, 2 * ((A-1) - (A+1)*cos_w0), a1)
-        a2 = torch.where(mask, (A+1) - (A-1)*cos_w0 - 2*sqrt_A*alpha, a2)
-        
-        return b0, b1, b2, a0, a1, a2
+        return coeffs
     
-    def _freq_response(self, b0, b1, b2, a0, a1, a2, is_48db):
+    def _freq_response(self, coeffs):
         """
         Compute the magnitude frequency response |H(e^jω)| at each STFT bin.
-        
-        Args:
-            b0..a2: (batch,) biquad coefficients
-            is_48db: (batch,) bool — if True, square the response (cascade two biquads)
-            
-        Returns:
-            H: (batch, num_bins) real-valued magnitude response
+        coeffs: (batch, 8, 6)
         """
-        # Expand: (batch,) -> (batch, 1) for broadcasting with (1, num_bins)
-        b0, b1, b2 = b0.unsqueeze(1), b1.unsqueeze(1), b2.unsqueeze(1)
-        a0, a1, a2 = a0.unsqueeze(1), a1.unsqueeze(1), a2.unsqueeze(1)
+        batch = coeffs.shape[0]
         
-        z1 = self.z_inv.unsqueeze(0)   # (1, num_bins)
-        z2 = self.z_inv2.unsqueeze(0)  # (1, num_bins)
+        # coeffs are (batch, 8 types, 6 values)
+        b0 = coeffs[:, :, 0].unsqueeze(-1) # (batch, 8, 1)
+        b1 = coeffs[:, :, 1].unsqueeze(-1)
+        b2 = coeffs[:, :, 2].unsqueeze(-1)
+        a0 = coeffs[:, :, 3].unsqueeze(-1)
+        a1 = coeffs[:, :, 4].unsqueeze(-1)
+        a2 = coeffs[:, :, 5].unsqueeze(-1)
+        
+        z1 = self.z_inv.unsqueeze(0).unsqueeze(0)   # (1, 1, num_bins)
+        z2 = self.z_inv2.unsqueeze(0).unsqueeze(0)  # (1, 1, num_bins)
         
         # H(z) = (b0 + b1·z⁻¹ + b2·z⁻²) / (a0 + a1·z⁻¹ + a2·z⁻²)
         numer = b0 + b1 * z1 + b2 * z2
         denom = a0 + a1 * z1 + a2 * z2
-        H = torch.abs(numer / (denom + 1e-8))
+        H = torch.abs(numer / (denom + 1e-8)) # (batch, 8, num_bins)
         
-        # 48dB/oct = two cascaded identical biquads → square the response
-        H = torch.where(is_48db.unsqueeze(1), H * H, H)
+        # 48dB/oct = two cascaded identical biquads (Types 0 and 7)
+        # Use out-of-place stacking to avoid gradient errors
+        H_list = []
+        for i in range(8):
+            Hi = H[:, i, :]
+            if i == 0 or i == 7:
+                Hi = Hi * Hi
+            H_list.append(Hi)
         
-        return H
+        return torch.stack(H_list, dim=1)
 
     def forward(self, audio, params):
         """
@@ -182,14 +170,22 @@ class EQEightProxy(nn.Module):
         
         for band_idx in range(max_bands):
             i = band_idx * 4
-            ftype = params[:, i].long()
+            ftype = params[:, i]            # Float for differentiability
             freq  = params[:, i + 1]
             gain  = params[:, i + 2]
             q     = params[:, i + 3]
             
-            b0, b1, b2, a0, a1, a2 = self._biquad_coeffs(ftype, freq, gain, q)
-            is_48db = (ftype == 0) | (ftype == 7)
-            H_band = self._freq_response(b0, b1, b2, a0, a1, a2, is_48db)
+            # 1. Compute H for all 8 types
+            coeffs_all = self._biquad_coeffs(freq, gain, q)
+            H_all = self._freq_response(coeffs_all) # (batch, 8, num_bins)
+            
+            # 2. Soft-selection weights for filter types
+            # Narrow softmax centered at ftype
+            indices = torch.arange(8, device=audio.device).view(1, 8)
+            weights = torch.softmax(-torch.abs(indices - ftype.unsqueeze(1)) / 0.1, dim=1)
+            
+            # 3. Blend H based on weights
+            H_band = torch.sum(H_all * weights.unsqueeze(-1), dim=1) # (batch, num_bins)
             
             H_combined = H_combined * H_band
         

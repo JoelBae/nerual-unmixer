@@ -12,6 +12,9 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')
 
 from src.models.inverter import NeuralInverter
 from src.data.dataset import NeuralProxyDataset
+from src.data.proxy_dataset import OnTheFlyProxyDataset
+from src.data.augment import AudioAugmentor
+from src.models.proxy.chain import ProxyChainer
 from src.models.heads.mdn import mdn_loss
 from src.utils.normalization import normalize_params
 
@@ -21,21 +24,38 @@ def train_inverter(args):
     print(f"Using device: {device}")
     
     # 1. Dataset & Loader
-    dataset = NeuralProxyDataset(
-        effect_name=args.effect, 
-        dataset_dir=args.dataset_dir, 
-        split="train",
-        preload=True
-    )
-    val_dataset = NeuralProxyDataset(
-        effect_name=args.effect, 
-        dataset_dir=args.dataset_dir, 
-        split="val",
-        preload=True
-    )
+    if args.use_proxy_data:
+        print(f"--- Using OnTheFlyProxyDataset (Sim-to-Real) ---")
+        dataset = OnTheFlyProxyDataset(virtual_length=args.proxy_virtual_size, effect_name=args.effect)
+        val_dataset = OnTheFlyProxyDataset(virtual_length=args.proxy_virtual_size // 10, effect_name=args.effect)
+        augmentor = AudioAugmentor(sample_rate=44100)
+    else:
+        dataset = NeuralProxyDataset(
+            effect_name=args.effect, 
+            dataset_dir=args.dataset_dir, 
+            split="train",
+            preload=True,
+            augment=True
+        )
+        val_dataset = NeuralProxyDataset(
+            effect_name=args.effect, 
+            dataset_dir=args.dataset_dir, 
+            split="val",
+            preload=True,
+            augment=False
+        )
     
     train_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
+    
+    # 2. Proxy Chainer
+    chainer = None
+    if args.use_proxy_data:
+        chainer = ProxyChainer(sr=44100).to(device)
+        chainer.load_checkpoints()
+        chainer.eval()
+        for param in chainer.parameters():
+            param.requires_grad = False
     
     # 2. Model
     model = NeuralInverter(latent_dim=args.latent_dim).to(device)
@@ -51,30 +71,51 @@ def train_inverter(args):
         model.train()
         train_loss = 0
         
-        for dry, params, target in tqdm(train_loader, desc=f"Epoch {epoch+1}"):
-            # For the Inverter:
-            # Input = WET Audio (target)
-            # Label = Params
-            target_audio = target.to(device)
+        for batch in tqdm(train_loader, desc=f"Epoch {epoch+1}"):
+            dry, params, target = batch[0], batch[1], batch[2]
+            order_idx = batch[3].to(device) if len(batch) > 3 else None
             true_params = params.to(device)
+            
+            if args.use_proxy_data and chainer is not None:
+                with torch.no_grad():
+                    # Generate audio dynamically from Proxies on the GPU
+                    target_audio = chainer.forward_flat(true_params, order_idx=order_idx)
+                    target_audio = augmentor(target_audio)
+            else:
+                target_audio = target.to(device)
             
             optimizer.zero_grad()
             
             # Forward
             outputs = model(target_audio)
             
-            # Normalize labels to 0-1 for MDN (except categorical)
+            # Normalize labels for MDN (skipping categorical)
             norm_true_params = normalize_params(true_params)
             
-            # Split into Continuous and Categorical
-            true_wave = true_params[:, 1].long() # Categorical uses raw index
-            true_cont = torch.cat([norm_true_params[:, 0:1], norm_true_params[:, 2:23]], dim=1)
+            # 1. Extract Continuous Label (MDN)
+            # Must match the order in NeuralInverter.predict assembly!
+            cont_list = []
+            cont_list.append(norm_true_params[:, 0:1])   # Transpose
+            cont_list.append(norm_true_params[:, 2:17])  # Operator (minus wave)
+            cont_list.append(norm_true_params[:, 18:21]) # Sat (minus type)
+            for band in range(8):
+                idx = 21 + (band * 4)
+                cont_list.append(norm_true_params[:, idx+1:idx+4]) # Freq, Gain, Q
+            cont_list.append(norm_true_params[:, 53:63]) # OTT, Reverb
+            true_cont = torch.cat(cont_list, dim=1)
             
-            # Losses
+            # 2. Extract Categorical Labels
+            true_wave = true_params[:, 1].long()
+            true_sat_type = true_params[:, 17].long()
+            true_eq8_types = [true_params[:, 21 + i*4].long() for i in range(8)]
+            
+            # 3. Calculate Losses
             loss_mdn = mdn_loss(outputs['pi'], outputs['mu'], outputs['sigma'], true_cont)
-            loss_ce = ce_loss(outputs['wave_logits'], true_wave)
+            loss_wave = ce_loss(outputs['wave_logits'], true_wave)
+            loss_sat = ce_loss(outputs['sat_type_logits'], true_sat_type)
+            loss_eq8 = sum([ce_loss(outputs['eq8_type_logits'][i], true_eq8_types[i]) for i in range(8)])
             
-            loss = loss_mdn + loss_ce
+            loss = loss_mdn + loss_wave + loss_sat + loss_eq8
             
             loss.backward()
             optimizer.step()
@@ -85,19 +126,43 @@ def train_inverter(args):
         model.eval()
         val_loss = 0
         with torch.no_grad():
-            for dry, params, target in val_loader:
-                target_audio = target.to(device)
+            for batch in val_loader:
+                dry, params, target = batch[0], batch[1], batch[2]
+                order_idx = batch[3].to(device) if len(batch) > 3 else None
                 true_params = params.to(device)
                 
+                if args.use_proxy_data and chainer is not None:
+                    target_audio = chainer.forward_flat(true_params, order_idx=order_idx)
+                else:
+                    target_audio = target.to(device)
+                    
                 outputs = model(target_audio)
                 
                 norm_true_params = normalize_params(true_params)
-                true_wave = true_params[:, 1].long()
-                true_cont = torch.cat([norm_true_params[:, 0:1], norm_true_params[:, 2:23]], dim=1)
                 
+                # Extract Cont
+                cont_list = []
+                cont_list.append(norm_true_params[:, 0:1])
+                cont_list.append(norm_true_params[:, 2:17])
+                cont_list.append(norm_true_params[:, 18:21])
+                for band in range(8):
+                    idx = 21 + (band * 4)
+                    cont_list.append(norm_true_params[:, idx+1:idx+4])
+                cont_list.append(norm_true_params[:, 53:63])
+                true_cont = torch.cat(cont_list, dim=1)
+                
+                # Extract Cat
+                true_wave = true_params[:, 1].long()
+                true_sat_type = true_params[:, 17].long()
+                true_eq8_types = [true_params[:, 21 + i*4].long() for i in range(8)]
+                
+                # Calculate Losses
                 loss_mdn = mdn_loss(outputs['pi'], outputs['mu'], outputs['sigma'], true_cont)
-                loss_ce = ce_loss(outputs['wave_logits'], true_wave)
-                val_loss += (loss_mdn + loss_ce).item()
+                loss_wave = ce_loss(outputs['wave_logits'], true_wave)
+                loss_sat = ce_loss(outputs['sat_type_logits'], true_sat_type)
+                loss_eq8 = sum([ce_loss(outputs['eq8_type_logits'][i], true_eq8_types[i]) for i in range(8)])
+                
+                val_loss += (loss_mdn + loss_wave + loss_sat + loss_eq8).item()
                 
         avg_train = train_loss / len(train_loader)
         avg_val = val_loss / len(val_loader)
@@ -118,6 +183,8 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--latent_dim", type=int, default=512)
+    parser.add_argument("--use_proxy_data", action="store_true", help="Use infinite proxy-generated data on-the-fly")
+    parser.add_argument("--proxy_virtual_size", type=int, default=100000)
     
     args = parser.parse_args()
     os.makedirs("checkpoints", exist_ok=True)

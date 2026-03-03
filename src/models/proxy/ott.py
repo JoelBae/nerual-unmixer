@@ -53,6 +53,16 @@ def design_lr4_ir(freq, sr, n_taps=1024):
     
     return torch.tensor(ir_lp, dtype=torch.float32), torch.tensor(ir_hp, dtype=torch.float32)
 
+def design_one_pole_ir(time_ms, sr, n_taps):
+    """
+    Design impulse response for a one-pole filter.
+    y[n] = alpha*x[n] + (1-alpha)*y[n-1]
+    """
+    alpha = 1.0 - np.exp(-1.0 / (sr * time_ms / 1000.0))
+    n = np.arange(n_taps)
+    ir = alpha * np.power(1.0 - alpha, n)
+    return torch.tensor(ir, dtype=torch.float32)
+
 class FIRFilter(nn.Module):
     """High-speed GPU-friendly FIR Filter using Conv1d."""
     def __init__(self, ir):
@@ -79,7 +89,7 @@ class OTTProxy(nn.Module):
         self.downsample_factor = downsample_factor
         self.time_dim = int(sr * duration)
         self.control_dim = self.time_dim // downsample_factor
-        self.num_params = 23
+        self.num_params = 7
         
         # STOCK VALUES (Re-frozen as Buffers)
         self.input_gain_db = 5.20
@@ -95,16 +105,23 @@ class OTTProxy(nn.Module):
         self.high_lp = FIRFilter(ir_lp2)
         self.high_hp = FIRFilter(ir_hp2)
 
-        # Topology 2.1: Learnable Dynamics (Attack/Release coefficients)
-        # We start with the stock ms values: 13.5ms, 22.4ms, 47.8ms for attack
-        # and 132ms, 282ms, 282ms for release.
-        att_ms = torch.tensor([13.5, 22.4, 47.8])
-        rel_ms = torch.tensor([132.0, 282.0, 282.0])
+        # Dynamics
         sr_control = sr / downsample_factor
         
-        # Convert to time constants alpha
-        self.att_alphas = nn.Parameter(1.0 - torch.exp(-1.0 / (sr_control * att_ms / 1000.0)))
-        self.rel_alphas = nn.Parameter(1.0 - torch.exp(-1.0 / (sr_control * rel_ms / 1000.0)))
+        # Release times are fixed based on known stock values
+        rel_ms = torch.tensor([132.0, 282.0, 282.0]) # H, M, L
+        rel_alphas_tensor = 1.0 - torch.exp(-1.0 / (sr_control * rel_ms / 1000.0))
+        self.register_buffer('rel_alphas', rel_alphas_tensor.view(1, 3, 1))
+
+        # Attack times are fixed via FIR filters based on stock OTT values
+        # The bands are processed in order [h, m, l] in the forward pass.
+        attack_times_ms = [13.5, 22.4, 47.8] # High, Mid, Low
+        attack_n_taps = 512
+        attack_filters = []
+        for att_ms in attack_times_ms:
+            ir = design_one_pole_ir(att_ms, sr_control, attack_n_taps)
+            attack_filters.append(FIRFilter(ir))
+        self.attack_filters = nn.ModuleList(attack_filters)
         
         self.register_buffer('below_slope', torch.tensor(1.0 - (1.0 / 4.17))) 
         self.register_buffer('above_slopes_buf', torch.tensor([1.0, 1.0 - (1/66.7), 1.0 - (1/66.7)]).view(3, 1, 1))
@@ -114,15 +131,17 @@ class OTTProxy(nn.Module):
         
         # Phase 2: Deep Spectral Residual Net
         self.residual_net = nn.Sequential(
-            nn.Conv1d(2, 64, kernel_size=3, padding=1, dilation=1),
+            nn.Conv1d(2, 128, kernel_size=3, padding=1, dilation=1),
             nn.GELU(),
-            nn.Conv1d(64, 64, kernel_size=3, padding=2, dilation=2),
+            nn.Conv1d(128, 128, kernel_size=3, padding=2, dilation=2),
             nn.GELU(),
-            nn.Conv1d(64, 64, kernel_size=3, padding=4, dilation=4),
+            nn.Conv1d(128, 128, kernel_size=3, padding=4, dilation=4),
             nn.GELU(),
-            nn.Conv1d(64, 64, kernel_size=3, padding=8, dilation=8),
+            nn.Conv1d(128, 128, kernel_size=3, padding=8, dilation=8),
             nn.GELU(),
-            nn.Conv1d(64, 2, kernel_size=3, padding=1),
+            nn.Conv1d(128, 128, kernel_size=3, padding=16, dilation=16),
+            nn.GELU(),
+            nn.Conv1d(128, 2, kernel_size=3, padding=1),
         )
         nn.init.zeros_(self.residual_net[-1].weight)
         nn.init.zeros_(self.residual_net[-1].bias)
@@ -148,21 +167,30 @@ class OTTProxy(nn.Module):
     def _envelope_follower(self, x_c):
         """Vectorized Attack/Release Follower."""
         # x_c: (Batch*3, 1, Tc) - RMS values at control rate
-        # This is a simplified recursive follower using cummax for speed, 
-        # but we add an attack alpha step for topological accuracy.
-        # For a truly differentiable recursive filter, we'd need a loop or scan,
-        # but cummax is a great "instant attack" proxy. To add "Attack", 
-        # we pre-smooth x_c with the attack alpha.
         bc, _, Tc = x_c.shape
         batch = bc // 3
         
-        # 1. Attack Smoothing (Linear)
-        # Simple FIR approximation for attack
-        att = self.att_alphas.repeat_interleave(batch).view(-1, 1, 1)
-        x_att = x_c # For now, we trust the pool1d already smoothed some attack
-        
+        # 1. Attack Smoothing (Explicit FIR)
+        # Reshape from (B*3, 1, Tc) to (B, 3, Tc) to apply per-band filters
+        x_c_reshaped = x_c.view(batch, 3, Tc)
+
+        # Apply the specific FIR attack filter to each band.
+        # The bands are in order [h, m, l].
+        h_rms = x_c_reshaped[:, 0:1, :]
+        m_rms = x_c_reshaped[:, 1:2, :]
+        l_rms = x_c_reshaped[:, 2:3, :]
+
+        h_att = self.attack_filters[0](h_rms)
+        m_att = self.attack_filters[1](m_rms)
+        l_att = self.attack_filters[2](l_rms)
+
+        # Combine bands back and reshape to (B*3, 1, Tc) for release stage
+        x_att_reshaped = torch.cat([h_att, m_att, l_att], dim=1)
+        x_att = x_att_reshaped.view(batch * 3, 1, Tc)
+
         # 2. Release Smoothing (Log-domain proxy using cummax)
-        rel = self.rel_alphas.repeat_interleave(batch).view(-1, 1, 1)
+        # Broadcast alphas to match interleaved batch shape (B, 3, 1) -> (B*3, 1, 1)
+        rel = self.rel_alphas.repeat(batch, 1, 1).view(-1, 1, 1)
         k = 1.0 - rel
         indices = torch.arange(Tc, device=x_c.device).view(1, 1, -1)
         kp = torch.pow(k, indices)
@@ -202,17 +230,18 @@ class OTTProxy(nn.Module):
         t_b = torch.stack([ott_params[:, 6], ott_params[:, 5], ott_params[:, 4]], dim=1).unsqueeze(-1)
         
         # Downward (Above Threshold)
-        # gain = -slope * (env - threshold)
         g_db = -self._apply_knee(env_db, t_a, self.above_slopes_buf.transpose(0, 1))
         
         # Upward (Below Threshold)
-        # gain = slope * (threshold - env)
-        # This is essentially Downward with flipped threshold logic
         g_db += self._apply_knee(-env_db, -t_b, self.below_slope)
         
+        # --- Apply Amount parameter by scaling the gain reduction/expansion ---
+        g_db_scaled = g_db * amount
+
         # Makeup and Apply
-        total_g = 10 ** (torch.clamp(g_db + self.out_gains_buf.transpose(0, 1), -80, 40) / 20.0)
+        total_g = 10 ** (torch.clamp(g_db_scaled + self.out_gains_buf.transpose(0, 1), -80, 40) / 20.0)
         combined = (bands * total_g.unsqueeze(2)).sum(dim=1)
         
-        return (1.0 - amount) * audio + amount * (combined + self.residual_net(combined))
+        # The residual net corrects any spectral differences in the final combined audio
+        return combined + self.residual_net(combined)
 

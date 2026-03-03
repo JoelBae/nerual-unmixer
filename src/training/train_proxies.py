@@ -18,9 +18,10 @@ from src.models.proxy.ddsp_modules import OperatorProxy
 from src.models.proxy.saturator import SaturatorProxy
 from src.models.proxy.eq8 import EQEightProxy
 from src.models.proxy.ott import OTTProxy
+from src.models.proxy.ott_stft import OTTSTFTProxy
 from src.models.proxy.reverb import ReverbProxy
 
-def get_proxy_model(effect_name):
+def get_proxy_model(effect_name, use_stft=False):
     name = effect_name.lower()
     if name == "operator":
         return OperatorProxy()
@@ -29,7 +30,7 @@ def get_proxy_model(effect_name):
     elif name == "eq8":
         return EQEightProxy()
     elif name == "ott":
-        return OTTProxy()
+        return OTTSTFTProxy() if use_stft else OTTProxy()
     elif name == "reverb":
         return ReverbProxy()
     else:
@@ -56,9 +57,10 @@ def train_proxy(effect_name, dataset_dir, batch_size=32, epochs=100, lr=1e-3, de
     print(f"Loaded {len(dataset_train)} Training / {len(dataset_val)} Validation samples")
     
     # 2. Setup Model, Loss, and Optimizer
-    model = get_proxy_model(effect_name).to(device)
+    model = get_proxy_model(effect_name, hasattr(args, 'stft') and args.stft).to(device)
     if device == "cuda":
-        model = model.half()
+        # The model is not manually cast to half(), autocast will handle it.
+        pass
     
     if effect_name.lower() == "ott":
         from src.models.losses import DynamicsLoss
@@ -90,11 +92,15 @@ def train_proxy(effect_name, dataset_dir, batch_size=32, epochs=100, lr=1e-3, de
         use_cosine = False
     
     os.makedirs("checkpoints", exist_ok=True)
-    save_path = f"checkpoints/{effect_name}_proxy.pt"
+    suffix = "_stft" if hasattr(args, 'stft') and args.stft else ""
+    save_path = f"checkpoints/{effect_name}_proxy{suffix}.pt"
     
     if resume and os.path.exists(save_path):
-        model.load_state_dict(torch.load(save_path, map_location=device, weights_only=True))
-        print(f"✅ Loaded checkpoint from {save_path}.")
+        state_dict = torch.load(save_path, map_location=device, weights_only=True)
+        model_state = model.state_dict()
+        filtered_state = {k: v for k, v in state_dict.items() if k in model_state and v.shape == model_state[k].shape}
+        model.load_state_dict(filtered_state, strict=False)
+        print(f"✅ Loaded checkpoint from {save_path} (filtered mismatched shapes).")
         
     best_val_loss = float('inf')
     patience_counter = 0
@@ -109,7 +115,7 @@ def train_proxy(effect_name, dataset_dir, batch_size=32, epochs=100, lr=1e-3, de
         
         progress_bar = tqdm(dataloader_train, desc=f"Epoch {epoch+1}/{epochs}")
         
-        for input_audio, params, target_audio in progress_bar:
+        for input_audio, params, target_audio, _ in progress_bar:
             input_audio = input_audio.to(device)
             params = params.to(device)
             target_audio = target_audio.to(device)
@@ -125,7 +131,7 @@ def train_proxy(effect_name, dataset_dir, batch_size=32, epochs=100, lr=1e-3, de
                         pred_audio = model(params)
                     else:
                         pred_audio = model(input_audio, params)
-                    loss = criterion(pred_audio, target_audio)
+                loss = criterion(pred_audio.float(), target_audio)
             elif device == "cuda":
                 with torch.autocast(device_type="cuda", enabled=True):
                     if effect_name.lower() == "operator":
@@ -162,7 +168,7 @@ def train_proxy(effect_name, dataset_dir, batch_size=32, epochs=100, lr=1e-3, de
         model.eval()
         total_val_loss = 0.0
         with torch.no_grad():
-            for input_audio, params, target_audio in dataloader_val:
+            for input_audio, params, target_audio, _ in dataloader_val:
                 input_audio = input_audio.to(device)
                 params = params.to(device)
                 target_audio = target_audio.to(device)
@@ -171,7 +177,7 @@ def train_proxy(effect_name, dataset_dir, batch_size=32, epochs=100, lr=1e-3, de
                     input_audio = input_audio.half()
                     with torch.autocast(device_type="mps", enabled=True, dtype=torch.float16):
                         pred_audio = model(input_audio, params)
-                        loss = criterion(pred_audio, target_audio)
+                    loss = criterion(pred_audio.float(), target_audio)
                 elif device == "cuda":
                     with torch.autocast(device_type="cuda", enabled=True):
                         pred_audio = model(input_audio, params)
@@ -215,6 +221,8 @@ if __name__ == "__main__":
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--phase2", action="store_true", help="Freeze dynamics, train only spectral correction.")
+    parser.add_argument("--stft", action="store_true", help="Use the new STFT-based architecture for OTT.")
+    parser.add_argument("--dataset_dir", type=str, default=None, help="Path to the dataset directory.")
     
     args = parser.parse_args()
     device = args.device or ("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
@@ -225,9 +233,11 @@ if __name__ == "__main__":
         print(f"⚠️  Capping OTT batch size to 32 for memory safety (requested {args.batch_size})")
         effective_batch_size = 32
 
+    dataset_dir = args.dataset_dir or f"dataset/{args.effect.lower()}"
+
     train_proxy(
         effect_name=args.effect, 
-        dataset_dir=f"dataset/{args.effect.lower()}",
+        dataset_dir=dataset_dir,
         batch_size=effective_batch_size,
         epochs=args.epochs,
         lr=args.lr,

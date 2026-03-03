@@ -40,6 +40,11 @@ $$ \mathcal{L}_{total} = \lambda_{MDN} \cdot \mathcal{L}_{NLL} + \lambda_{Spectr
 *   **NLL (Negative Log-Likelihood)**: Ensures the parameter distribution matches the ground truth.
 *   **Multi-Scale STFT Loss**: Self-supervised loss ensuring audio fidelity.
 
+### Sim-to-Real Domain Randomization (New in V3)
+To bridge the gap between our PyTorch Proxies (Simulator) and Ableton Live (Reality), the Inverter is trained on an **Infinite On-The-Fly Proxy Dataset**.
+*   **Infinite Data**: Random Ableton parameters are generated on the CPU, and the audio is rendered dynamically on the GPU by the `ProxyChainer`.
+*   **Domain Randomization**: Every single generated audio sample is uniquely augmented (Random EQ, Random Gain, Phase Inversion, White Noise) before hitting the Inverter. This forces the Inverter to learn robust, structural DSP behaviors rather than overfitting to specific proxy frequency coloration.
+
 ### Training Pipeline
 ```bash
 python -m src.training.train_proxies --effect <effect_name>

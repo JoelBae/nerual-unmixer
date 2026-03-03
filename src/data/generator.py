@@ -75,42 +75,67 @@ class ParameterRandomizer:
                 "track_index": 0, "device_index": 1,
                 "params": [
                     {"index": 1, "name": "Drive", "min": 0.0, "max": 1.0},
-                    # Output (Index 10) removed to keep fixed at 0dB (User Request)
-                    # Type (Index 3) is an Enum (0-7)
-                    # 0=Analog, 1=Soft Sine, 2=Bass, 3=Medium, 4=Hard, 5=Sinoid, 6=Digi, 7=Waveshaper
                     {"index": 3, "name": "Type", "min": 0.0, "max": 6.0}, 
                     {"index": 15, "name": "WS Curve", "min": 0.0, "max": 1.0},
-                    {"index": 18, "name": "WS Depth", "min": 0.0, "max": 1.0}
+                    {"index": 18, "name": "WS Depth", "min": 0.0, "max": 1.0},
+                    # NOTE: Parameter index 29 for Dry/Wet is a common default in Ableton.
+                    {"index": 29, "name": "Dry/Wet", "min": 0.0, "max": 1.0}
                 ]
             },
             # 2. EQ EIGHT (Device Index 2)
             {
                 "track_index": 0, "device_index": 2,
                 "params": [
-                    # Band 1 (Low Shelf/Cut)
-                    {"index": 6, "name": "Bond 1 Freq", "min": 0.0, "max": 0.5},
-                    {"index": 7, "name": "Band 1 Gain", "min": -15.0, "max": 15.0}, # Full +/- 15dB
+                    # Band 1: Allow Low Shelf (2) or Bell (3).
+                    {"index": 6, "name": "Band 1 Freq", "min": 20.0, "max": 2000.0, "scale": "log"}, 
+                    {"index": 7, "name": "Band 1 Gain", "min": -15.0, "max": 15.0, "scale": "raw"},
+                    {"index": 8, "name": "Band 1 Q",    "min": 0.1,  "max": 18.0, "scale": "linear"},
+                    {"index": 5, "name": "Band 1 Type", "min": 3,    "max": 3,    "scale": "raw"},
                     
-                    # Band 2 (Bell/Parametric)
-                    {"index": 16, "name": "Band 2 Freq", "min": 0.1, "max": 0.8},
-                    {"index": 17, "name": "Band 2 Gain", "min": -15.0, "max": 15.0}, # Full +/- 15dB
-                    {"index": 18, "name": "Band 2 Q", "min": 0.1, "max": 0.9},
+                    # Band 2-7: Locked to Bell (3) for stable data generation
+                    {"index": 16, "name": "Band 2 Freq", "min": 100.0, "max": 5000.0, "scale": "log"},
+                    {"index": 17, "name": "Band 2 Gain", "min": -15.0, "max": 15.0, "scale": "raw"},
+                    {"index": 18, "name": "Band 2 Q",    "min": 0.1,  "max": 18.0, "scale": "linear"},
+                    {"index": 15, "name": "Band 2 Type", "min": 3,    "max": 3,    "scale": "raw"},
 
-                    # Band 3 (Bell/Parametric)
-                    {"index": 26, "name": "Band 3 Freq", "min": 0.3, "max": 0.9},
-                    {"index": 27, "name": "Band 3 Gain", "min": -15.0, "max": 15.0}, # Full +/- 15dB
-                    {"index": 28, "name": "Band 3 Q", "min": 0.1, "max": 0.9},
+                    {"index": 26, "name": "Band 3 Freq", "min": 200.0, "max": 8000.0, "scale": "log"},
+                    {"index": 27, "name": "Band 3 Gain", "min": -15.0, "max": 15.0, "scale": "raw"},
+                    {"index": 28, "name": "Band 3 Q",    "min": 0.1,  "max": 18.0, "scale": "linear"},
+                    {"index": 25, "name": "Band 3 Type", "min": 3,    "max": 3,    "scale": "raw"},
 
-                    # Band 4 (High Shelf/Cut)
-                    {"index": 36, "name": "Band 4 Freq", "min": 0.5, "max": 1.0},
-                    {"index": 37, "name": "Band 4 Gain", "min": -15.0, "max": 15.0}, # Full +/- 15dB
+                    {"index": 36, "name": "Band 4 Freq", "min": 500.0, "max": 15000.0, "scale": "log"},
+                    {"index": 37, "name": "Band 4 Gain", "min": -15.0, "max": 15.0, "scale": "raw"},
+                    {"index": 38, "name": "Band 4 Q",    "min": 0.1,  "max": 18.0, "scale": "linear"},
+                    {"index": 35, "name": "Band 4 Type", "min": 3,    "max": 3,    "scale": "raw"},
+
+                    {"index": 46, "name": "Band 5 Freq", "min": 500.0, "max": 15000.0, "scale": "log"},
+                    {"index": 47, "name": "Band 5 Gain", "min": -15.0, "max": 15.0, "scale": "raw"},
+                    {"index": 48, "name": "Band 5 Q",    "min": 0.1,  "max": 18.0, "scale": "linear"},
+                    {"index": 45, "name": "Band 5 Type", "min": 3,    "max": 3,    "scale": "raw"},
+
+                    {"index": 56, "name": "Band 6 Freq", "min": 500.0, "max": 15000.0, "scale": "log"},
+                    {"index": 57, "name": "Band 6 Gain", "min": -15.0, "max": 15.0, "scale": "raw"},
+                    {"index": 58, "name": "Band 6 Q",    "min": 0.1,  "max": 18.0, "scale": "linear"},
+                    {"index": 55, "name": "Band 6 Type", "min": 3,    "max": 3,    "scale": "raw"},
+
+                    {"index": 66, "name": "Band 7 Freq", "min": 500.0, "max": 15000.0, "scale": "log"},
+                    {"index": 67, "name": "Band 7 Gain", "min": -15.0, "max": 15.0, "scale": "raw"},
+                    {"index": 68, "name": "Band 7 Q",    "min": 0.1,  "max": 18.0, "scale": "linear"},
+                    {"index": 65, "name": "Band 7 Type", "min": 3,    "max": 3,    "scale": "raw"},
+
+                    # Band 8: Allow High Shelf (5) or Bell (3).
+                    {"index": 76, "name": "Band 8 Freq", "min": 1000.0, "max": 20000.0, "scale": "log"},
+                    {"index": 77, "name": "Band 8 Gain", "min": -15.0, "max": 15.0, "scale": "raw"},
+                    {"index": 78, "name": "Band 8 Q",    "min": 0.1,  "max": 18.0, "scale": "linear"},
+                    {"index": 75, "name": "Band 8 Type", "min": 3,    "max": 3,    "scale": "raw"},
                 ]
             },
             # 3. OTT (Device Index 3) - Multiband Dynamics
             {
                 "track_index": 0, "device_index": 3,
                 "params": [
-                    {"index": 6, "name": "Amount", "min": 1.0, "max": 1.0}, # Fixed 100% wet
+                    # Amount now randomized to ensure effect is present but not always 100%
+                    {"index": 6, "name": "Amount", "min": 0.5, "max": 1.0},
                     
                     # Thresholds (Raw dB: -60 to 0)
                     {"index": 17, "name": "Abv Thresh L", "min": -60.0, "max": 0.0},
@@ -129,11 +154,37 @@ class ParameterRandomizer:
                     # Probed: 0.4 ≈ 2.0s actual decay in Ableton
                     {"index": 20, "name": "Decay Time", "min": 0.05, "max": 0.4}, 
                     {"index": 26, "name": "Size", "min": 0.0, "max": 1.0}, 
-                    {"index": 32, "name": "Dry/Wet", "min": 1.0, "max": 1.0}  # Fixed 100% wet
+                    # Dry/Wet is now learnable
+                    {"index": 32, "name": "Dry/Wet", "min": 0.0, "max": 1.0}
                 ]
             }
         ]
         
+    def scale_to_normalized(self, val, param):
+        """Scale raw value to 0-1 for Ableton API."""
+        scale = param.get("scale", "linear")
+        
+        if scale == "raw":
+            return float(val)
+            
+        # If device_min/max are provided, use them for absolute normalization
+        # otherwise fall back to randomization min/max.
+        p_min = param.get("device_min", param.get("min", 0.0))
+        p_max = param.get("device_max", param.get("max", 1.0))
+        
+        if scale == "linear":
+            return (val - p_min) / (p_max - p_min + 1e-8)
+        elif scale == "log":
+            # For log, we usually use the randomization min/max as the base
+            r_min = param.get("min", 20.0)
+            r_max = param.get("max", 20000.0)
+            return np.log10(val / r_min) / (np.log10(r_max / r_min) + 1e-8)
+        elif scale == "discrete":
+            # Discrete values: normalize absolute value within the device range
+            val_rounded = np.round(val)
+            return (val_rounded - p_min) / (p_max - p_min + 1e-8)
+        return val
+
     def randomize(self, target_device_index=None):
         settings_log = []
         flat_params = []
@@ -142,22 +193,35 @@ class ParameterRandomizer:
             t_idx = device["track_index"]
             d_idx = device["device_index"]
             
-            # If focusing on a single effect (e.g., Saturator), 
-            # we MUST randomize the generator (Operator - d_idx 0) AND the target effect.
-            # We skip other random effects to keep the signal chain pure.
             if target_device_index is not None:
-                if d_idx != target_device_index and d_idx != 0: # Device 0 is the instrument
+                # User Request: If generating for EQ8, do NOT randomize Operator (Device 0)
+                # target_device_index 2 is EQ8.
+                if target_device_index == 2 and d_idx == 0:
+                    continue
+                if d_idx != target_device_index and d_idx != 0:
                     continue
             
             for param in device["params"]:
-                val = np.random.uniform(param["min"], param["max"])
+                if param.get("scale") == "log":
+                    val = 10**np.random.uniform(np.log10(param["min"]), np.log10(param["max"]))
+                else:
+                    val = np.random.uniform(param["min"], param["max"])
+                
                 flat_params.append(val)
+                
+                # Normalize for Ableton API
+                # Special case: Operator macros in generator.py use 0-127 MIDI scale
+                if d_idx == 0:
+                     norm_val = val / 127.0
+                else:
+                     norm_val = self.scale_to_normalized(val, param)
                 
                 settings_log.append({
                     "track": t_idx,
                     "device": d_idx,
                     "param": param["index"],
-                    "value": val,
+                    "raw_value": val,
+                    "norm_value": norm_val,
                     "name": param["name"]
                 })
                 
@@ -244,6 +308,7 @@ def generate_dataset(num_samples: int, output_dir: str, duration: float = 2.0, s
     # Check for existing samples to RESUME
     start_index = 0
     if os.path.exists(output_dir):
+        # Fix: Filter for output_*.wav to avoid matching metadata.json or input_*.wav
         existing_files = [f for f in os.listdir(output_dir) if f.startswith("output_") and f.endswith(".wav")]
         if existing_files:
             indices = []
@@ -257,7 +322,7 @@ def generate_dataset(num_samples: int, output_dir: str, duration: float = 2.0, s
             
             if indices:
                 start_index = max(indices) + 1
-                print(f"--- Found {len(indices)} existing samples. Resuming from index {start_index} ---")
+                print(f"--- Found {len(indices)} existing samples in {output_dir}. Resuming from index {start_index} ---")
 
     if start_index >= num_samples:
         print(f"Target count {num_samples} already reached (current max index {start_index-1}). Skipping generation.")
@@ -276,11 +341,15 @@ def generate_dataset(num_samples: int, output_dir: str, duration: float = 2.0, s
         
         # 2. Send to Ableton
         for setting in settings_log:
+            # Skip metadata-only settings like {"input_dry": True}
+            if "param" not in setting:
+                continue
+                
             client.set_track_parameter(
                 setting["track"], 
                 setting["device"], 
                 setting["param"], 
-                setting["value"]
+                setting["norm_value"]
             )
         
         time.sleep(0.1)

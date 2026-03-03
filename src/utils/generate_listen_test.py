@@ -18,27 +18,14 @@ from src.models.proxy.eq8 import EQEightProxy
 from src.models.proxy.ddsp_modules import OperatorProxy
 from src.data.dataset import NeuralProxyDataset
 
-def get_proxy_model(effect_name):
-    name = effect_name.lower()
-    if name == "operator":
-        return OperatorProxy()
-    elif name == "saturator":
-        return SaturatorProxy()
-    elif name == "eq8":
-        return EQEightProxy()
-    elif name == "ott":
-        return OTTProxy()
-    elif name == "reverb":
-        return ReverbProxy()
-    else:
-        raise ValueError(f"Unknown effect name: {effect_name}")
+from src.training.train_proxies import get_proxy_model
 
-def generate_comparison(effect_name, checkpoint_path=None, num_samples=3):
+def generate_comparison(effect_name, checkpoint_path=None, num_samples=3, use_stft=False):
     print(f"--- Generating Listen Test for {effect_name} ---")
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
     
     # 1. Load Model
-    model = get_proxy_model(effect_name).to(device)
+    model = get_proxy_model(effect_name, use_stft).to(device)
     if checkpoint_path and os.path.exists(checkpoint_path):
         model.load_state_dict(torch.load(checkpoint_path, map_location=device, weights_only=True))
         print(f"✅ Loaded checkpoint from {checkpoint_path}")
@@ -65,7 +52,7 @@ def generate_comparison(effect_name, checkpoint_path=None, num_samples=3):
         num_to_test = min(num_samples, len(dataset))
         for i in range(num_to_test):
             idx = random.randint(0, len(dataset) - 1)
-            dry, params, target = dataset[idx]
+            dry, params, target, _ = dataset[idx]
             
             dry = dry.unsqueeze(0).to(device) # (1, 2, T)
             params = params.unsqueeze(0).to(device)
@@ -116,6 +103,7 @@ if __name__ == "__main__":
     parser.add_argument("--effect", type=str, required=True)
     parser.add_argument("--checkpoint", type=str, default=None)
     parser.add_argument("--num_samples", type=int, default=3)
+    parser.add_argument("--stft", action="store_true", help="Use the new STFT-based architecture for OTT")
     args = parser.parse_args()
     
-    generate_comparison(args.effect, args.checkpoint, args.num_samples)
+    generate_comparison(args.effect, args.checkpoint, args.num_samples, args.stft)

@@ -97,7 +97,7 @@ class SaturatorProxy(nn.Module):
         
         # Extract parameters
         drive    = params[:, 0].view(batch, 1, 1)   # (batch, 1, 1)
-        sat_type = params[:, 1].long()               # (batch,)
+        sat_type = params[:, 1]                        # (batch,) Keep as float for differentiability
         ws_curve = params[:, 2].view(batch, 1, 1)
         ws_depth = params[:, 3].view(batch, 1, 1)
         dry_wet  = params[:, 4].view(batch, 1, 1)
@@ -109,41 +109,28 @@ class SaturatorProxy(nn.Module):
         # Apply drive gain to the input audio
         driven = audio * gain
         
-        # Apply each saturation type using masks for batched processing
-        # Start with a copy of the driven signal
+        # Soft-Selection Mechanism for Differentiability
+        # We compute all 8 saturation types and blend them based on proximity to 'sat_type'
+        # indices: (1, 8)
+        indices = torch.arange(8, device=audio.device).view(1, 8)
+        # Narrow softmax centered at sat_type (temp=0.1 makes it nearly discrete but differentiable)
+        weights = torch.softmax(-torch.abs(indices - sat_type.unsqueeze(1)) / 0.1, dim=1)
+        
+        types = [
+            self._analog_clip(driven),                                  # 0
+            self._soft_sine(driven),                                    # 1
+            self._bass(driven),                                         # 2
+            self._medium_clip(driven),                                  # 3
+            self._hard_clip(driven),                                    # 4
+            self._sinoid_fold(driven),                                  # 5
+            self._digital_clip(driven),                                 # 6
+            self._waveshaper(driven, ws_curve, ws_depth)                # 7
+        ]
+        
         saturated = torch.zeros_like(driven)
-        
-        # Type 0: Analog Clip
-        mask = (sat_type == 0).view(batch, 1, 1).expand_as(driven)
-        saturated = torch.where(mask, self._analog_clip(driven), saturated)
-        
-        # Type 1: Soft Sine
-        mask = (sat_type == 1).view(batch, 1, 1).expand_as(driven)
-        saturated = torch.where(mask, self._soft_sine(driven), saturated)
-        
-        # Type 2: Bass
-        mask = (sat_type == 2).view(batch, 1, 1).expand_as(driven)
-        saturated = torch.where(mask, self._bass(driven), saturated)
-        
-        # Type 3: Medium Curve
-        mask = (sat_type == 3).view(batch, 1, 1).expand_as(driven)
-        saturated = torch.where(mask, self._medium_clip(driven), saturated)
-        
-        # Type 4: Hard Clip
-        mask = (sat_type == 4).view(batch, 1, 1).expand_as(driven)
-        saturated = torch.where(mask, self._hard_clip(driven), saturated)
-        
-        # Type 5: Sinoid Fold
-        mask = (sat_type == 5).view(batch, 1, 1).expand_as(driven)
-        saturated = torch.where(mask, self._sinoid_fold(driven), saturated)
-        
-        # Type 6: Digital Clip
-        mask = (sat_type == 6).view(batch, 1, 1).expand_as(driven)
-        saturated = torch.where(mask, self._digital_clip(driven), saturated)
-        
-        # Type 7: Waveshaper
-        mask = (sat_type == 7).view(batch, 1, 1).expand_as(driven)
-        saturated = torch.where(mask, self._waveshaper(driven, ws_curve, ws_depth), saturated)
+        for i in range(8):
+            w = weights[:, i].view(batch, 1, 1)
+            saturated = saturated + w * types[i]
         
         # Dry/Wet blend: 0.0 = fully dry, 1.0 = fully wet
         out_audio = (1.0 - dry_wet) * audio + dry_wet * saturated

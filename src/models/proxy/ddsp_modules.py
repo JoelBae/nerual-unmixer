@@ -193,7 +193,8 @@ class OperatorProxy(nn.Module):
     def load_wave_table(self, path="checkpoints/wave_table.pt"):
         """Loads analyzed harmonic table."""
         if os.path.exists(path):
-            self.wave_mapper.table = torch.load(path, map_location='cpu')
+            loaded_table = torch.load(path, map_location=self.wave_mapper.table.device)
+            self.wave_mapper.table.copy_(loaded_table)
             print(f"✅ Loaded Wave Lookup Table from {path}")
         else:
             print(f"⚠️  Wave Table not found at {path}. Using default sine wave.")

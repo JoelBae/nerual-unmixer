@@ -1,7 +1,27 @@
 import torch
 import torch.nn as nn
-import torchaudio.functional as F
+import torch.nn.functional as F
 import math
+
+def fft_convolve(signal, kernel):
+    """
+    Robust FFT-based convolution for differentiability and performance.
+    Fallback for when torchaudio.functional.fftconvolve is missing.
+    """
+    try:
+        import torchaudio.functional as taf
+        return taf.fftconvolve(signal, kernel, mode='full')
+    except (ImportError, AttributeError):
+        # Manual FFT Convolve
+        n_signal = signal.shape[-1]
+        n_kernel = kernel.shape[-1]
+        n_fft = n_signal + n_kernel - 1
+        
+        S = torch.fft.rfft(signal, n=n_fft)
+        K = torch.fft.rfft(kernel, n=n_fft)
+        Y = S * K
+        y = torch.fft.irfft(Y, n=n_fft)
+        return y
 
 class ReverbProxy(nn.Module):
     """
@@ -28,7 +48,6 @@ class ReverbProxy(nn.Module):
     def __init__(self, sr=44100, max_ir_seconds=3.0):
         super().__init__()
         self.sr = sr
-        self.num_params = 19
         self.max_ir_length = int(max_ir_seconds * sr)
         
         # Stereo noise buffers for decorrelated reverb tails
@@ -130,7 +149,7 @@ class ReverbProxy(nn.Module):
         audio_flat = audio.reshape(batch * channels, time)
         ir_flat = ir.reshape(batch * channels, -1)
         
-        wet = F.fftconvolve(audio_flat, ir_flat, mode='full')
+        wet = fft_convolve(audio_flat, ir_flat)
         wet = wet[:, :time]
         wet = wet.reshape(batch, channels, time)
         

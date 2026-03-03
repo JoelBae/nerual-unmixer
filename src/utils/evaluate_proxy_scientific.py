@@ -10,15 +10,16 @@ import numpy as np
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 from src.models.proxy.ott import OTTProxy
+from src.models.proxy.ott_stft import OTTSTFTProxy
 from src.data.dataset import NeuralProxyDataset
 from src.models.losses import SpectralLoss
 
-def evaluate_scientific(checkpoint_path="checkpoints/ott_proxy(2).pt", batch_size=32):
+def evaluate_scientific(checkpoint_path="checkpoints/ott_proxy(2).pt", batch_size=32, use_stft=False):
     print(f"--- Scientific Performance Review: OTT Proxy ---")
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
     
     # 1. Load Model
-    model = OTTProxy().to(device)
+    model = OTTSTFTProxy().to(device) if use_stft else OTTProxy().to(device)
     model.load_state_dict(torch.load(checkpoint_path, map_location=device, weights_only=True))
     model.eval()
     
@@ -37,7 +38,7 @@ def evaluate_scientific(checkpoint_path="checkpoints/ott_proxy(2).pt", batch_siz
     print(f"   > Evaluating over {len(dataset)} validation samples...")
     
     with torch.no_grad():
-        for dry, params, target in tqdm(loader):
+        for dry, params, target, _ in tqdm(loader):
             dry = dry.to(device)
             target = target.to(device)
             params = params.to(device)
@@ -93,5 +94,10 @@ def evaluate_scientific(checkpoint_path="checkpoints/ott_proxy(2).pt", batch_siz
     print("="*40)
 
 if __name__ == "__main__":
-    path = sys.argv[1] if len(sys.argv) > 1 else "checkpoints/ott_proxy(2).pt"
-    evaluate_scientific(checkpoint_path=path)
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("checkpoint", type=str, nargs='?', default="checkpoints/ott_proxy(2).pt")
+    parser.add_argument("--stft", action="store_true", help="Evaluate the new STFT-based architecture")
+    args = parser.parse_args()
+    
+    evaluate_scientific(checkpoint_path=args.checkpoint, use_stft=args.stft)

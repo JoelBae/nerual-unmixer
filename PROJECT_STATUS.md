@@ -9,6 +9,7 @@ We have created high-fidelity digital twins (Proxies) for the entire Ableton sig
 - **Operator (Synth)**: Using a **Differentiable Lookup Table** approach. We captured the harmonic "fingerprint" of all 128 waveforms via FFT, allowing the AI to dial in exact timbres with 100% accuracy.
 - **EQ Eight & Saturator**: Implemented as **Analytical Proxies**. These use exact mathematical formulas, requiring zero training and providing mathematical perfection in the signal path.
 - **OTT & Reverb**: Trained using **Deep Learning (TCN/LSTM)**. These proxies have been verified to replicate the complex dynamics and spatial characteristics of the original Ableton effects.
+  - **UPDATE**: The `OTTProxy`'s attack modeling has been refactored. It now uses an explicit FIR filter approximation for the attack envelope follower instead of a placeholder learnable parameter. This improves the physical accuracy of the multiband compression simulation.
 
 ### 2. Architecture & Learning
 - **Unified Chainer**: The `ProxyChainer` module allows audio to flow through a *dynamic sequence* of effects while maintaining gradients for backpropagation. It now supports runtime re-ordering of the entire effect chain.
@@ -24,22 +25,26 @@ We have created high-fidelity digital twins (Proxies) for the entire Ableton sig
 
 ## 📅 Moving Forward: The Road to Final Un-Mixing
 
-### Phase 1: End-to-End Encoder Training
-The primary goal now is the **Full-Chain Run**. We will train the `AudioEncoder` to look at a processed sound and simultaneously predict:
+### Phase 1: Proxy & Model Updates (Dry/Wet Prediction)
+The immediate goal is to update the entire system to support per-effect dry/wet mix control.
+
+### Phase 2: End-to-End Encoder Training
+Once the proxies are updated, we will train the `AudioEncoder` to predict:
 1.  **The Effect Order**: Which of the 24 possible effect chain permutations was used.
-2.  All 16 Operator parameters (Wave, Filter, ADSR, Pitch Env).
-3.  All 4 Saturator parameters.
-4.  All 32 EQ Eight parameters.
-5.  All 7 OTT parameters.
-6.  All 3 Reverb parameters.
+2.  **Dry/Wet Mixes**: The individual mix level for the Saturator and Reverb.
+3.  All 16 Operator parameters (Wave, Filter, ADSR, Pitch Env).
+4.  All 5 Saturator parameters (including Dry/Wet).
+5.  All 32 EQ Eight parameters.
+6.  All 7 OTT parameters (Amount and 6 Thresholds).
+7.  All 3 Reverb parameters (including a now-learnable Dry/Wet).
 
-### Phase 2: Refinement & Inference
-- **Parameter Snapping**: Finalizing the "Inference Head" that snaps the predicted wave dial to the nearest integer while keeping the filter and envelope values continuous.
-- **Generalization**: Testing the model on complex patches it hasn't seen during training to verify its "musical intuition."
+### Phase 3: Refinement & Inference
+- **Parameter Snapping**: Finalizing the "Inference Head" that snaps categorical predictions.
+- **Generalization**: Testing the model on complex patches it hasn't seen.
 
-### Phase 3: Deployment
-- Preparing a final script for "One-Click Un-Mixing" where you can drag any audio clip in and get the matching Ableton preset.
+### Phase 4: Deployment
+- Preparing a final script for "One-Click Un-Mixing".
 
 ---
-**Current Status**: 🟡 Ready for Data Generation for the new dynamic chain.
-**Next Command**: `python src/data/generator.py --num_samples 1000 --output_dir ./dataset/full_chain_permutations`
+**Current Status**: 🟡 In Progress: Updating proxies to support Dry/Wet control.
+**Next Command**: `python src/data/generator.py --num_samples 1000 --output_dir ./dataset/full_chain_dry_wet`

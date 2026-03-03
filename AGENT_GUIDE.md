@@ -21,7 +21,10 @@ These are digital twins of Ableton devices. They allow gradients to flow from au
 ### 3. Data & Training (`src/data/`, `src/training/`)
 - `generator.py`: OSC-based script that controls Ableton Live to generate random dataset samples.
 - `ableton_client.py`: Low-level OSC communication with AbletonOSC.
-- `dataset.py`: PyTorch Dataset for loading audio/parameter pairs.
+- `dataset.py`: PyTorch Dataset for loading static Ableton audio/parameter pairs.
+- `proxy_dataset.py`: **Infinite Dataset Generator** that creates random Ableton parameters on-the-fly for GPU proxy rendering.
+- `augment.py`: Audio Augmentor applying **Domain Randomization** (Gain, Phase, Noise, Random EQ) per-sample.
+- `train_inverter.py`: Main Inverter training script. Use `--use_proxy_data` to bypass Ableton data and train directly on the infinite GPU proxy distribution.
 - `train_inverter_audio.py`: Main end-to-end training script using Strategy B (Match the sound, not the numbers).
 
 ## 🛠 Key Workflows
@@ -36,17 +39,20 @@ If you change the waveform selection in Ableton:
 2. Run `python src/training/analyze_wave_sweep.py`.
 3. The resulting `wave_table.pt` will be used by all agents and proxies.
 
-### Training the Un-Mixer
-- **Stage 1 (Optional)**: `python src/training/train_inverter.py` (Predict parameters directly).
-- **Stage 2 (Primary)**: `python src/training/train_inverter_audio.py` (Match the audio output of the full proxy chain).
+### Training the Un-Mixer (Inverter)
+- **Sim-to-Real Methodology**: We train the Inverter on infinite, on-the-fly data generated entirely by the PyTorch proxies, using Domain Randomization to prevent overfitting to proxy flaws.
+- Run `python src/training/train_inverter.py --effect full_chain --use_proxy_data` to begin a massive GPU-bound training pass.
+- **Stage 2 (Finetuning)**: `python src/training/train_inverter_audio.py` (Match the audio output of the full proxy chain using realistic Ableton target tracks).
 
-## 📊 Parameter Mapping (62 total)
-The system currently targets a 62-parameter vector:
-1. **Operator (0-15)**: Transpose, Wave, Filter, ADSR, Pitch Env.
-2. **Saturator (16-19)**: Drive, Type, WS Curve, WS Depth.
-3. **EQ Eight (20-51)**: 8 bands × [Type, Freq, Gain, Q].
-4. **OTT (52-58)**: Amount, 6 Thresholds.
-5. **Reverb (59-61)**: Decay, Size, Dry/Wet.
+## 📊 Parameter Mapping (63 total)
+The system currently targets a 63-parameter vector, plus a categorical prediction for effect order.
+
+1. **Operator (0-15)**: Transpose, Wave, Filter, ADSR, Pitch Env. (16 params)
+2. **Saturator (16-20)**: Drive, Type, WS Curve, WS Depth, **Dry/Wet**. (5 params)
+3. **EQ Eight (21-52)**: 8 bands × [Type, Freq, Gain, Q]. (32 params)
+4. **OTT (53-59)**: Amount, 6 Thresholds. (7 params)
+5. **Reverb (60-62)**: Decay, Size, **Dry/Wet**. (3 params) 
+   - *Note: The Reverb proxy's existing `Dry/Wet` parameter is now learnable, instead of being fixed at 100%.*
 
 ## 🤝 Tips for Other Agents
 - **Stereo Consistency**: All audio inside the system is expected to be `(Batch, 2, Time)`.

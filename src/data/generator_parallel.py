@@ -55,31 +55,102 @@ OPERATOR_PARAMS = [
 
 EFFECT_SCHEMAS = {
     "ott": [
-        {"index": 6,  "name": "Amount",       "min": 1.0,   "max": 1.0},  # Fixed 100% wet
-        {"index": 17, "name": "Abv Thresh L", "min": -60.0, "max": 0.0},
-        {"index": 18, "name": "Abv Thresh M", "min": -60.0, "max": 0.0},
-        {"index": 19, "name": "Abv Thresh H", "min": -60.0, "max": 0.0},
-        {"index": 20, "name": "Blw Thresh L", "min": -60.0, "max": 0.0},
-        {"index": 21, "name": "Blw Thresh M", "min": -60.0, "max": 0.0},
-        {"index": 22, "name": "Blw Thresh H", "min": -60.0, "max": 0.0},
-    ],
-    "phaser": [
-        {"index": 3,  "name": "Frequency", "min": 0.0,  "max": 1.0},
-        {"index": 25, "name": "Feedback",  "min": 0.0,  "max": 0.95},
-        {"index": 1,  "name": "Amount",    "min": 0.0,  "max": 1.0},  # Modulation depth (NOT dry/wet)
+        {"index": 6,  "name": "Amount",       "min": 0.5,   "max": 1.0,  "scale": "linear"},
+        {"index": 17, "name": "Abv Thresh L", "min": -60.0, "max": 0.0,  "scale": "linear"},
+        {"index": 18, "name": "Abv Thresh M", "min": -60.0, "max": 0.0,  "scale": "linear"},
+        {"index": 19, "name": "Abv Thresh H", "min": -60.0, "max": 0.0,  "scale": "linear"},
+        {"index": 20, "name": "Blw Thresh L", "min": -60.0, "max": 0.0,  "scale": "linear"},
+        {"index": 21, "name": "Blw Thresh M", "min": -60.0, "max": 0.0,  "scale": "linear"},
+        {"index": 22, "name": "Blw Thresh H", "min": -60.0, "max": 0.0,  "scale": "linear"},
     ],
     "saturator": [
-        {"index": 1,  "name": "Drive",    "min": 0.0, "max": 1.0},
-        {"index": 3,  "name": "Type",     "min": 0.0, "max": 6.0},
-        {"index": 15, "name": "WS Curve", "min": 0.0, "max": 1.0},
-        {"index": 18, "name": "WS Depth", "min": 0.0, "max": 1.0},
+        {"index": 1,  "name": "Drive",    "min": 0.0, "max": 1.0,  "scale": "linear"},
+        {"index": 3,  "name": "Type",     "min": 0.0, "max": 6.0,  "scale": "discrete"},
+        {"index": 15, "name": "WS Curve", "min": 0.0, "max": 1.0,  "scale": "linear"},
+        {"index": 18, "name": "WS Depth", "min": 0.0, "max": 1.0,  "scale": "linear"},
     ],
     "reverb": [
-        {"index": 20, "name": "Decay Time", "min": 0.05, "max": 0.4},
-        {"index": 26, "name": "Size",       "min": 0.0,  "max": 1.0},
-        {"index": 32, "name": "Dry/Wet",    "min": 1.0,  "max": 1.0},  # Fixed 100% wet
+        {"index": 20, "name": "Decay Time", "min": 0.05, "max": 0.4,  "scale": "linear"},
+        {"index": 26, "name": "Size",       "min": 0.0,  "max": 1.0,  "scale": "linear"},
+        {"index": 32, "name": "Dry/Wet",    "min": 0.0,  "max": 1.0,  "scale": "linear"},
+    ],
+    "eq8": [
+        # EQ8 values in AbletonOSC behavior for this user:
+        # Categorical (Type) and Gain often require RAW values.
+        # Band 1
+        {"index": 6, "name": "Band 1 Freq", "min": 20.0, "max": 2000.0, "scale": "log"}, 
+        {"index": 7, "name": "Band 1 Gain", "min": -15.0, "max": 15.0, "scale": "raw"},
+        {"index": 8, "name": "Band 1 Q",    "min": 0.1,  "max": 18.0, "scale": "linear"},
+        {"index": 5, "name": "Band 1 Type", "min": 3,    "max": 3,    "scale": "raw"},
+        
+        # Band 2-7: Locked to Bell (3)
+        {"index": 16, "name": "Band 2 Freq", "min": 100.0, "max": 5000.0, "scale": "log"},
+        {"index": 17, "name": "Band 2 Gain", "min": -15.0, "max": 15.0, "scale": "raw"},
+        {"index": 18, "name": "Band 2 Q",    "min": 0.1,  "max": 18.0, "scale": "linear"},
+        {"index": 15, "name": "Band 2 Type", "min": 3,    "max": 3,    "scale": "raw"},
+
+        {"index": 26, "name": "Band 3 Freq", "min": 200.0, "max": 8000.0, "scale": "log"},
+        {"index": 27, "name": "Band 3 Gain", "min": -15.0, "max": 15.0, "scale": "raw"},
+        {"index": 28, "name": "Band 3 Q",    "min": 0.1,  "max": 18.0, "scale": "linear"},
+        {"index": 25, "name": "Band 3 Type", "min": 3,    "max": 3,    "scale": "raw"},
+
+        {"index": 36, "name": "Band 4 Freq", "min": 500.0, "max": 15000.0, "scale": "log"},
+        {"index": 37, "name": "Band 4 Gain", "min": -15.0, "max": 15.0, "scale": "raw"},
+        {"index": 38, "name": "Band 4 Q",    "min": 0.1,  "max": 18.0, "scale": "linear"},
+        {"index": 35, "name": "Band 4 Type", "min": 3,    "max": 3,    "scale": "raw"},
+
+        {"index": 46, "name": "Band 5 Freq", "min": 500.0, "max": 15000.0, "scale": "log"},
+        {"index": 47, "name": "Band 5 Gain", "min": -15.0, "max": 15.0, "scale": "raw"},
+        {"index": 48, "name": "Band 5 Q",    "min": 0.1,  "max": 18.0, "scale": "linear"},
+        {"index": 45, "name": "Band 5 Type", "min": 3,    "max": 3,    "scale": "raw"},
+
+        {"index": 56, "name": "Band 6 Freq", "min": 500.0, "max": 15000.0, "scale": "log"},
+        {"index": 57, "name": "Band 6 Gain", "min": -15.0, "max": 15.0, "scale": "raw"},
+        {"index": 58, "name": "Band 6 Q",    "min": 0.1,  "max": 18.0, "scale": "linear"},
+        {"index": 55, "name": "Band 6 Type", "min": 3,    "max": 3,    "scale": "raw"},
+
+        {"index": 66, "name": "Band 7 Freq", "min": 500.0, "max": 15000.0, "scale": "log"},
+        {"index": 67, "name": "Band 7 Gain", "min": -15.0, "max": 15.0, "scale": "raw"},
+        {"index": 68, "name": "Band 7 Q",    "min": 0.1,  "max": 18.0, "scale": "linear"},
+        {"index": 65, "name": "Band 7 Type", "min": 3,    "max": 3,    "scale": "raw"},
+
+        # Band 8
+        {"index": 76, "name": "Band 8 Freq", "min": 1000.0, "max": 20000.0, "scale": "log"},
+        {"index": 77, "name": "Band 8 Gain", "min": -15.0, "max": 15.0, "scale": "raw"},
+        {"index": 78, "name": "Band 8 Q",    "min": 0.1,  "max": 18.0, "scale": "linear"},
+        {"index": 75, "name": "Band 8 Type", "min": 3,    "max": 3,    "scale": "raw"},
     ],
 }
+
+def scale_to_normalized(val, param):
+    """
+    Scale a raw value to 0.0-1.0 based on the parameter's range and scale type.
+    Note: Ableton instruments/effects almost always expect 0-1 via OSC.
+    However, some setups expect RAW values for specific parameters.
+    """
+    scale = param.get("scale", "linear")
+    
+    if scale == "raw":
+        return float(val)
+        
+    # If device_min/max are provided, use them for absolute normalization
+    # otherwise fall back to randomization min/max.
+    p_min = param.get("device_min", param.get("min", 0.0))
+    p_max = param.get("device_max", param.get("max", 1.0))
+    
+    if scale == "linear":
+        return (val - p_min) / (p_max - p_min + 1e-8)
+    elif scale == "log":
+        # Log scaling for frequency: log(val/min) / log(max/min)
+        # For log, we usually use the randomization min/max as the base
+        r_min = param.get("min", 20.0)
+        r_max = param.get("max", 20000.0)
+        return np.log10(val / r_min) / (np.log10(r_max / r_min) + 1e-8)
+    elif scale == "discrete":
+        # Discrete values: normalize absolute value within the device range
+        val_rounded = np.round(val)
+        return (val_rounded - p_min) / (p_max - p_min + 1e-8)
+    return val
 
 
 def detect_blackhole(min_channels=4):
@@ -130,37 +201,52 @@ def randomize_lane(client, lane_idx, effect_name, lane_tracks):
     settings_log = []
     flat_params = []
     
-    # 1. Randomize Operator params (set on BOTH dry and wet tracks)
-    for param in OPERATOR_PARAMS:
-        val = np.random.uniform(param["min"], param["max"])
-        flat_params.append(val)
-        
-        # Set on dry track (device 0)
-        client.set_track_parameter(dry_track, 0, param["index"], val)
-        # Set on wet track (device 0) — must match!
-        client.set_track_parameter(wet_track, 0, param["index"], val)
-        
-        settings_log.append({
-            "track": dry_track,
-            "device": 0,
-            "param": param["index"],
-            "value": val,
-            "name": param["name"]
-        })
+    # 1. Randomize Operator params (skip for EQ8 as requested)
+    if effect_name.lower() != "eq8":
+        for param in OPERATOR_PARAMS:
+            val = np.random.uniform(param["min"], param["max"])
+            flat_params.append(val)
+            
+            # Normalize to 0-1 for Ableton Macros (as they map to internal ranges)
+            norm_val = val / 127.0
+            
+            # Set on dry track (device 0)
+            client.set_track_parameter(dry_track, 0, param["index"], norm_val)
+            time.sleep(0.002) # Tiny throttle
+            # Set on wet track (device 0) — must match!
+            client.set_track_parameter(wet_track, 0, param["index"], norm_val)
+            time.sleep(0.002)
+            
+            settings_log.append({
+                "track": dry_track,
+                "device": 0,
+                "param": param["index"],
+                "raw_value": val,
+                "norm_value": norm_val,
+                "name": param["name"]
+            })
     
     # 2. Randomize Effect params (wet track only, device 1)
     effect_params = EFFECT_SCHEMAS.get(effect_name.lower(), [])
     for param in effect_params:
-        val = np.random.uniform(param["min"], param["max"])
+        if param.get("scale") == "log":
+             val = 10**np.random.uniform(np.log10(param["min"]), np.log10(param["max"]))
+        else:
+             val = np.random.uniform(param["min"], param["max"])
         flat_params.append(val)
         
-        client.set_track_parameter(wet_track, 1, param["index"], val)
+        # Normalize for Ableton API
+        norm_val = scale_to_normalized(val, param)
+        
+        client.set_track_parameter(wet_track, 1, param["index"], norm_val)
+        time.sleep(0.002) # Tiny throttle
         
         settings_log.append({
             "track": wet_track,
             "device": 1,
             "param": param["index"],
-            "value": val,
+            "raw_value": val,
+            "norm_value": norm_val,
             "name": param["name"]
         })
     
@@ -173,6 +259,24 @@ def generate_parallel(num_samples, output_dir, effect_name, duration=2.0, sample
     
     os.makedirs(output_dir, exist_ok=True)
     client = AbletonClient()
+    
+    print("--- Checking OSC Connection ---")
+    if client.ping():
+        print("✅ Ableton is responsive (Bidirectional).")
+    else:
+        print("⚠️  Warning: Ableton did NOT respond to handshake (11001).")
+        print("   Proceeding in SEND-ONLY mode. Ensure your faders move!")
+
+    actual_tracks = client.get_track_count()
+    required_tracks = num_lanes * 2
+    if actual_tracks is not None:
+        print(f"✅ Found {actual_tracks} tracks in Ableton.")
+        if actual_tracks < required_tracks:
+            print(f"❌ ERROR: Parallel generator ({num_lanes} lanes) requires {required_tracks} tracks. You only have {actual_tracks}.")
+            print("   Please add enough tracks to your session.")
+            sys.exit(1)
+    else:
+        print("⚠️  Warning: Could not verify track count. Proceeding with caution...")
     
     # Auto-detect BlackHole
     required_channels = num_lanes * 4
@@ -187,20 +291,33 @@ def generate_parallel(num_samples, output_dir, effect_name, duration=2.0, sample
     # Build track layout for this lane count
     lane_tracks = [(i * 2, i * 2 + 1) for i in range(num_lanes)]
     
+    # Ensure all EQ8 bands are ON for all wet tracks
+    if effect_name.lower() == "eq8":
+        print("🔧 Setting up EQ8: Turning on all 8 bands for all wet tracks...")
+        for _, wet_track in lane_tracks:
+            for band_idx in range(8):
+                # Filter On A: 4, 14, 24, 34, 44, 54, 64, 74
+                on_index = 4 + (band_idx * 10)
+                client.set_track_parameter(wet_track, 1, on_index, 1.0)
+            time.sleep(0.05) # Small throttle per track
+        print("✅ EQ8 Setup complete.")
+    
     # Check for existing samples to resume
     start_index = 0
-    existing = [f for f in os.listdir(output_dir) if f.startswith("output_") and f.endswith(".wav")]
-    if existing:
+    if os.path.exists(output_dir):
+        # Fix: Filter for output_*.wav to avoid matching metadata.json or input_*.wav
+        existing = [f for f in os.listdir(output_dir) if f.startswith("output_") and f.endswith(".wav")]
         indices = []
         for f in existing:
             try:
+                # Expecting 'output_00000.wav'
                 idx_str = f.split('_')[1].split('.')[0]
                 indices.append(int(idx_str))
             except (IndexError, ValueError):
                 pass
         if indices:
             start_index = max(indices) + 1
-            print(f"--- Found {len(indices)} existing samples. Resuming from index {start_index} ---")
+            print(f"--- Found {len(indices)} existing samples in {output_dir}. Resuming from index {start_index} ---")
     
     if start_index >= num_samples:
         print(f"Target {num_samples} already reached. Skipping.")
