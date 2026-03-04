@@ -1,8 +1,8 @@
-# Neural Un-Mixer V3
+# Audio-Chain Estimation Network (ACEN)
 
-**Inverse Signal Chain Estimation for Analyis-by-Synthesis**
+**Inverse Signal Chain Estimation for Analysis-by-Synthesis**
 
-The Neural Un-Mixer V3 is a deep learning system designed to reverse-engineer synthesizer parameters from raw audio. It listens to a sound and predicts the exact configuration (oscillator, filters, effects) used to create it.
+The Audio-Chain Estimation Network (ACEN) is a deep learning system designed to reverse-engineer synthesizer parameters from raw audio. It listens to a sound and predicts the exact configuration (oscillator, filters, effects) used to create it.
 
 ## 🏗 Architecture Overview
 

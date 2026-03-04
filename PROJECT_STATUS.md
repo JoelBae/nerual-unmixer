@@ -1,4 +1,4 @@
-# Neural Un-Mixer V3: Project Status Report
+# Audio-Chain Estimation Network (ACEN): Project Status Report
 
 ## 🚀 Accomplishments So Far
 
