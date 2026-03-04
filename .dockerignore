@@ -1,0 +1,11 @@
+.git
+.gitignore
+.DS_Store
+dataset/
+runs/
+results/
+tmp/
+*.pyc
+__pycache__/
+.pytest_cache/
+.ipynb_checkpoints/

@@ -7,6 +7,11 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 import argparse
 from tqdm import tqdm
+from torch.utils.tensorboard import SummaryWriter
+import torchaudio
+import matplotlib.pyplot as plt
+import io
+import numpy as np
 
 # Add project root to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
@@ -72,11 +77,41 @@ def assemble_full_params(mdn_out, wave_idx, sat_type_idx, eq8_type_idxs, batch_s
     
     return full_params
 
+def plot_spectrogram(audio, title="Spectrogram"):
+    """Helper to create a spectrogram image for TensorBoard."""
+    # audio: (channels, time)
+    audio = audio.cpu()
+    spectrogram = torchaudio.transforms.Spectrogram(n_fft=1024)(audio)
+    # Average channels for visualization if stereo
+    if spectrogram.shape[0] > 1:
+        spectrogram = spectrogram.mean(dim=0)
+    else:
+        spectrogram = spectrogram.squeeze(0)
+        
+    fig, ax = plt.subplots(figsize=(10, 4))
+    img = ax.imshow(torch.log10(spectrogram + 1e-9), aspect='auto', origin='lower')
+    ax.set_title(title)
+    plt.colorbar(img, ax=ax)
+    
+    # Save to buffer
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png')
+    plt.close(fig)
+    buf.seek(0)
+    
+    # Convert buffer to tensor
+    image = plt.imread(buf)
+    return torch.from_numpy(image).permute(2, 0, 1) # (C, H, W)
+
 
 def train_inverter_audio(args):
     print(f"--- Training Full Inverter with Composite Audio + Categorical Loss ---")
     device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
     print(f"Using device: {device}")
+    
+    # 0. Setup Logging
+    writer = SummaryWriter(log_dir=args.log_dir)
+    global_step = 0
     
     # 1. Dataset & Loader
     if args.use_proxy_data:
@@ -109,6 +144,11 @@ def train_inverter_audio(args):
     loss_audio_fn = DynamicsLoss().to(device)
     loss_wave_fn = nn.CrossEntropyLoss()
     loss_order_fn = nn.CrossEntropyLoss()
+    
+    # Validation helper
+    def get_accuracy(logits, targets):
+        pred = torch.argmax(logits, dim=1)
+        return (pred == targets).float().mean().item()
     
     # Loss weights
     w_audio = args.w_audio
@@ -172,16 +212,24 @@ def train_inverter_audio(args):
             loss.backward()
             optimizer.step()
             
+            # Logging
             total_loss += loss.item()
             total_audio_loss += loss_audio.item()
             total_wave_loss += loss_wave.item()
             total_order_loss += loss_order.item()
             
+            if global_step % 10 == 0:
+                writer.add_scalar("Train/Total_Loss", loss.item(), global_step)
+                writer.add_scalar("Train/Audio_Loss", loss_audio.item(), global_step)
+                writer.add_scalar("Train/Wave_Loss", loss_wave.item(), global_step)
+                writer.add_scalar("Train/Order_Loss", loss_order.item(), global_step)
+                writer.add_scalar("Train/Wave_Acc", get_accuracy(outputs['wave_logits'], true_wave_idx), global_step)
+            
+            global_step += 1
             progress_bar.set_postfix({
-                'L': f"{loss.item():.3f}",
-                'L_aud': f"{loss_audio.item():.3f}",
-                'L_wav': f"{loss_wave.item():.3f}",
-                'L_ord': f"{loss_order.item():.3f}"
+                "L": f"{loss.item():.3f}", 
+                "L_aud": f"{loss_audio.item():.3f}",
+                "L_wav": f"{loss_wave.item():.3f}"
             })
             
         # 5. Validation
@@ -228,6 +276,19 @@ def train_inverter_audio(args):
         avg_train = total_loss / len(train_loader)
         avg_val = val_loss / len(val_loader)
         
+        writer.add_scalar("Val/Total_Loss", avg_val, epoch)
+        writer.add_scalar("Val/Audio_Loss", val_audio_loss / len(val_loader), epoch)
+        
+        # --- Visual/Audio Debugging ---
+        # Log first sample of the last validation batch
+        with torch.no_grad():
+            writer.add_audio("Val/Target_Audio", target_audio[0], epoch, sample_rate=44100)
+            writer.add_audio("Val/Reconstructed_Audio", reconstructed_audio[0], epoch, sample_rate=44100)
+            
+            # Spectrograms
+            writer.add_image("Val/Target_Spec", plot_spectrogram(target_audio[0], "Target"), epoch)
+            writer.add_image("Val/Recon_Spec", plot_spectrogram(reconstructed_audio[0], "Reconstructed"), epoch)
+
         print(f"\nEpoch {epoch+1}: Train Loss={avg_train:.4f} | Val Loss={avg_val:.4f}")
         print(f"  Components (Val): Audio={val_audio_loss/len(val_loader):.4f}, Wave={val_wave_loss/len(val_loader):.4f}, Order={val_order_loss/len(val_loader):.4f}")
         
@@ -235,6 +296,8 @@ def train_inverter_audio(args):
             best_val_loss = avg_val
             torch.save(model.state_dict(), f"checkpoints/inverter_{args.effect}_audio_best.pt")
             print("🌟 New best audio inverter saved!")
+            
+    writer.close()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train the full audio inverter model.")
@@ -250,6 +313,7 @@ if __name__ == "__main__":
     parser.add_argument("--w_order", type=float, default=0.5, help="Weight for categorical order prediction loss.")
     parser.add_argument("--use_proxy_data", action="store_true", help="Use infinite proxy-generated data on-the-fly")
     parser.add_argument("--proxy_virtual_size", type=int, default=100000, help="Virtual epoch size for infinite dataset")
+    parser.add_argument("--log_dir", type=str, default="runs/inverter_audio")
     
     args = parser.parse_args()
     if args.effect != "full_chain":

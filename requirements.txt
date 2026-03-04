@@ -11,3 +11,6 @@ python-osc
 pylive
 sounddevice
 pysoundfile
+tqdm
+matplotlib
+tensorboard

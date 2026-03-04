@@ -6,6 +6,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 import argparse
 from tqdm import tqdm
+from torch.utils.tensorboard import SummaryWriter
 
 # Add project root to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
@@ -22,6 +23,10 @@ def train_inverter(args):
     print(f"--- Training Neural Inverter (Ears) for {args.effect} ---")
     device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
     print(f"Using device: {device}")
+    
+    # 0. Setup Logging
+    writer = SummaryWriter(log_dir=args.log_dir)
+    global_step = 0
     
     # 1. Dataset & Loader
     if args.use_proxy_data:
@@ -120,7 +125,14 @@ def train_inverter(args):
             loss.backward()
             optimizer.step()
             
+            # Logging
             train_loss += loss.item()
+            if global_step % 10 == 0:
+                writer.add_scalar("Train/Total_Loss", loss.item(), global_step)
+                writer.add_scalar("Train/MDN_Loss", loss_mdn.item(), global_step)
+                writer.add_scalar("Train/Wave_Loss", loss_wave.item(), global_step)
+            
+            global_step += 1
             
         # 4. Validation
         model.eval()
@@ -167,6 +179,8 @@ def train_inverter(args):
         avg_train = train_loss / len(train_loader)
         avg_val = val_loss / len(val_loader)
         
+        writer.add_scalar("Val/Total_Loss", avg_val, epoch)
+        
         print(f"Epoch {epoch+1}: Train Loss = {avg_train:.4f} | Val Loss = {avg_val:.4f}")
         
         # Save checkpoint
@@ -174,6 +188,8 @@ def train_inverter(args):
             best_val_loss = avg_val
             torch.save(model.state_dict(), f"checkpoints/inverter_{args.effect}_best.pt")
             print("  New best model saved!")
+            
+    writer.close()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -185,6 +201,7 @@ if __name__ == "__main__":
     parser.add_argument("--latent_dim", type=int, default=512)
     parser.add_argument("--use_proxy_data", action="store_true", help="Use infinite proxy-generated data on-the-fly")
     parser.add_argument("--proxy_virtual_size", type=int, default=100000)
+    parser.add_argument("--log_dir", type=str, default="runs/inverter_param")
     
     args = parser.parse_args()
     os.makedirs("checkpoints", exist_ok=True)
