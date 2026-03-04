@@ -27,7 +27,7 @@ def train_inverter(args):
     if args.use_proxy_data:
         print(f"--- Using OnTheFlyProxyDataset (Sim-to-Real) ---")
         dataset = OnTheFlyProxyDataset(virtual_length=args.proxy_virtual_size, effect_name=args.effect)
-        val_dataset = OnTheFlyProxyDataset(virtual_length=args.proxy_virtual_size // 10, effect_name=args.effect)
+        val_dataset = OnTheFlyProxyDataset(virtual_length=max(args.proxy_virtual_size // 10, 100), effect_name=args.effect)
         augmentor = AudioAugmentor(sample_rate=44100)
     else:
         dataset = NeuralProxyDataset(

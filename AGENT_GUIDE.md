@@ -9,7 +9,9 @@ These are digital twins of Ableton devices. They allow gradients to flow from au
 - `ddsp_modules.py`: Contains `OperatorProxy` (Additive Synth) and helper modules (ADSR, Filters).
 - `saturator.py`: Analytical implementation of the Saturator device.
 - `eq8.py`: Analytical biquad-based implementation of EQ Eight.
-- `ott.py`: TCN-based proxy for the Multiband Dynamics (OTT) device.
+- `ott.py`: **Active OTT Proxy**. Gray-box multiband compressor with 128-channel 1D Conv `residual_net` for spectral correction. Checkpoint: `ott_proxy.pt`.
+- `ott_stft.py`: Experimental STFT-based variant (processes audio in frequency domain via 2D Conv). Superseded by `ott_stft_conditioned.py`.
+- `ott_stft_conditioned.py`: **Alternative OTT Proxy**. Adds FiLM parameter conditioning to the STFT U-Net, injecting OTT knob positions into the spectral correction network. Slower but slightly better Log-Magnitude Loss. Checkpoint: `ott_proxy_cond.pt`. Use `--stft_cond` flag in training/evaluation scripts.
 - `reverb.py`: FDN-based proxy for the Reverb device.
 - `chain.py`: **The Signal Chain**. Links all proxies together. Supports dynamic reordering of effects.
 

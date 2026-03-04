@@ -20,12 +20,12 @@ from src.data.dataset import NeuralProxyDataset
 
 from src.training.train_proxies import get_proxy_model
 
-def generate_comparison(effect_name, checkpoint_path=None, num_samples=3, use_stft=False):
+def generate_comparison(effect_name, checkpoint_path=None, num_samples=3, use_stft=False, use_stft_cond=False):
     print(f"--- Generating Listen Test for {effect_name} ---")
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
     
     # 1. Load Model
-    model = get_proxy_model(effect_name, use_stft).to(device)
+    model = get_proxy_model(effect_name, use_stft, use_stft_cond).to(device)
     if checkpoint_path and os.path.exists(checkpoint_path):
         model.load_state_dict(torch.load(checkpoint_path, map_location=device, weights_only=True))
         print(f"✅ Loaded checkpoint from {checkpoint_path}")
@@ -103,7 +103,8 @@ if __name__ == "__main__":
     parser.add_argument("--effect", type=str, required=True)
     parser.add_argument("--checkpoint", type=str, default=None)
     parser.add_argument("--num_samples", type=int, default=3)
-    parser.add_argument("--stft", action="store_true", help="Use the new STFT-based architecture for OTT")
+    parser.add_argument("--stft", action="store_true", help="Use the old STFT-based architecture for OTT")
+    parser.add_argument("--stft_cond", action="store_true", help="Use the new Conditioned STFT-based architecture for OTT")
     args = parser.parse_args()
     
-    generate_comparison(args.effect, args.checkpoint, args.num_samples, args.stft)
+    generate_comparison(args.effect, args.checkpoint, args.num_samples, args.stft, args.stft_cond)

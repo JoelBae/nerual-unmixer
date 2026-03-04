@@ -13,31 +13,62 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')
 
 from src.models.inverter import NeuralInverter
 from src.data.dataset import NeuralProxyDataset
+from src.data.proxy_dataset import OnTheFlyProxyDataset
+from src.data.augment import AudioAugmentor
 from src.models.proxy.chain import ProxyChainer
 from src.models.losses import DynamicsLoss
+from src.models.heads.mdn import MDNHead
 from src.utils.normalization import denormalize_params
 
-def assemble_full_params(mdn_out, wave_idx, batch_size, device):
-    """Helper to construct the 63-param vector for the chainer."""
-    # Create a placeholder for the full parameter vector
+def assemble_full_params(mdn_out, wave_idx, sat_type_idx, eq8_type_idxs, batch_size, device):
+    """
+    Reconstruct the 63-param flat vector from the MDN's 53 continuous outputs
+    and the categorical head predictions.
+    
+    MDN layout (53 features, matching train_inverter.py cont_list order):
+      [0]      Transpose
+      [1:15]   Operator continuous (FilterFreq, FilterRes, Fe*, Pe*, Ae*) = 14
+      [15:18]  Saturator continuous (WS Curve, WS Depth, Dry/Wet) = 3
+      [18:42]  EQ8 continuous (8 bands x [Freq, Gain, Q]) = 24
+      [42:49]  OTT continuous (Amount + 6 Thresholds) = 7
+      [49:52]  Reverb continuous (Decay, Size, Dry/Wet) = 3
+    Total = 1 + 14 + 3 + 24 + 7 + 3 = 52
+    
+    Full param layout (63):
+      [0]      Transpose
+      [1]      Wave (categorical)
+      [2:16]   Operator continuous (14)
+      [16]     Sat Drive (continuous)  -- wait, let me re-check normalization.py
+      [17]     Sat Type (categorical)
+      [18:21]  Sat continuous (3)
+      [21-52]  EQ8: 8 bands x [Type(cat), Freq, Gain, Q] (32)
+      [53:60]  OTT (7)
+      [60:63]  Reverb (3)
+    """
     full_params = torch.zeros(batch_size, 63, device=device)
+    idx = 0
     
-    # Operator (15 cont + 1 cat)
-    full_params[:, 0] = mdn_out[:, 0]            # Transpose
-    full_params[:, 1] = wave_idx.float()         # Ground truth wave index
-    full_params[:, 2:16] = mdn_out[:, 1:15]      # Filter, Envs...
+    # Operator
+    full_params[:, 0] = mdn_out[:, idx]; idx += 1          # Transpose
+    full_params[:, 1] = wave_idx.float()                   # Wave (categorical)
+    full_params[:, 2:16] = mdn_out[:, idx:idx+14]; idx += 14  # Operator continuous
     
-    # Saturator (5 cont)
-    full_params[:, 16:21] = mdn_out[:, 15:20]
+    # Saturator
+    full_params[:, 16] = mdn_out[:, idx]; idx += 1         # Drive
+    full_params[:, 17] = sat_type_idx.float()               # Type (categorical)
+    full_params[:, 18:21] = mdn_out[:, idx:idx+3]; idx += 3  # WS Curve, Depth, DryWet
     
-    # EQ Eight (32 cont)
-    full_params[:, 21:53] = mdn_out[:, 20:52]
+    # EQ Eight (8 bands x 4 params, type is categorical)
+    for band in range(8):
+        base = 21 + (band * 4)
+        full_params[:, base] = eq8_type_idxs[band].float()          # Type (categorical)
+        full_params[:, base+1:base+4] = mdn_out[:, idx:idx+3]; idx += 3  # Freq, Gain, Q
     
-    # OTT (7 cont)
-    full_params[:, 53:60] = mdn_out[:, 52:59]
+    # OTT (7 continuous)
+    full_params[:, 53:60] = mdn_out[:, idx:idx+7]; idx += 7
     
-    # Reverb (3 cont)
-    full_params[:, 60:63] = mdn_out[:, 59:62]
+    # Reverb (3 continuous)
+    full_params[:, 60:63] = mdn_out[:, idx:idx+3]; idx += 3
     
     return full_params
 
@@ -48,11 +79,18 @@ def train_inverter_audio(args):
     print(f"Using device: {device}")
     
     # 1. Dataset & Loader
-    dataset = NeuralProxyDataset(effect_name=args.effect, dataset_dir=args.dataset_dir, split="train", preload=False)
-    val_dataset = NeuralProxyDataset(effect_name=args.effect, dataset_dir=args.dataset_dir, split="val", preload=False)
+    if args.use_proxy_data:
+        print(f"--- Using OnTheFlyProxyDataset (Sim-to-Real) ---")
+        dataset = OnTheFlyProxyDataset(virtual_length=args.proxy_virtual_size, effect_name=args.effect)
+        val_dataset = OnTheFlyProxyDataset(virtual_length=max(args.proxy_virtual_size // 10, 100), effect_name=args.effect)
+        augmentor = AudioAugmentor(sample_rate=44100)
+    else:
+        dataset = NeuralProxyDataset(effect_name=args.effect, dataset_dir=args.dataset_dir, split="train", preload=False)
+        val_dataset = NeuralProxyDataset(effect_name=args.effect, dataset_dir=args.dataset_dir, split="val", preload=False)
+        augmentor = None
     
-    train_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=True)
-    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4, pin_memory=True)
+    train_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=0 if args.use_proxy_data else 4, pin_memory=True)
+    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=0 if args.use_proxy_data else 4, pin_memory=True)
     
     # 2. Models
     model = NeuralInverter(latent_dim=args.latent_dim).to(device)
@@ -84,10 +122,18 @@ def train_inverter_audio(args):
         total_loss, total_audio_loss, total_wave_loss, total_order_loss = 0, 0, 0, 0
         
         progress_bar = tqdm(train_loader, desc=f"Epoch {epoch+1}")
-        for _, true_params, target_audio, true_order_idx in progress_bar:
-            target_audio = target_audio.to(device)
-            true_params = true_params.to(device)
-            true_order_idx = true_order_idx.to(device)
+        for batch in progress_bar:
+            true_params = batch[1].to(device)
+            true_order_idx = batch[3].to(device) if len(batch) > 3 else None
+            
+            # Generate or load target audio
+            if args.use_proxy_data:
+                with torch.no_grad():
+                    target_audio_clean = chainer.forward_flat(true_params, order_idx=true_order_idx)
+                    # Apply Domain Randomization to what the Inverter SEES
+                    target_audio = augmentor(target_audio_clean)
+            else:
+                target_audio = batch[2].to(device)
             
             optimizer.zero_grad()
             
@@ -99,11 +145,18 @@ def train_inverter_audio(args):
             loss_order = loss_order_fn(outputs['order_logits'], true_order_idx)
 
             # --- Audio Reconstruction Loss ---
-            pi, mu = outputs['pi'], outputs['mu']
-            best_g = torch.argmax(pi, dim=1)
-            mu_best = mu[torch.arange(target_audio.shape[0]), best_g]
+            pi, mu, sigma = outputs['pi'], outputs['mu'], outputs['sigma']
+            # Use MDN sample: pick the mean of the most probable Gaussian
+            # mu: (batch, out_features, num_gaussians) -> mu_best: (batch, out_features)
+            _, max_indices = torch.max(pi, dim=2)
+            max_indices = max_indices.unsqueeze(-1)
+            mu_best = torch.gather(mu, 2, max_indices).squeeze(-1)
 
-            full_params_norm = assemble_full_params(mu_best, true_wave_idx, target_audio.shape[0], device)
+            # Get categorical predictions for assembly
+            pred_sat_type = torch.argmax(outputs['sat_type_logits'], dim=1)
+            pred_eq8_types = [torch.argmax(logits, dim=1) for logits in outputs['eq8_type_logits']]
+
+            full_params_norm = assemble_full_params(mu_best, true_wave_idx, pred_sat_type, pred_eq8_types, target_audio.shape[0], device)
             pred_params_raw = denormalize_params(full_params_norm)
             
             reconstructed_audio = chainer.forward_flat(pred_params_raw, order_idx=true_order_idx)
@@ -135,10 +188,16 @@ def train_inverter_audio(args):
         model.eval()
         val_loss, val_audio_loss, val_wave_loss, val_order_loss = 0, 0, 0, 0
         with torch.no_grad():
-            for _, true_params, target_audio, true_order_idx in val_loader:
-                target_audio = target_audio.to(device)
-                true_params = true_params.to(device)
-                true_order_idx = true_order_idx.to(device)
+            for batch in val_loader:
+                true_params = batch[1].to(device)
+                true_order_idx = batch[3].to(device) if len(batch) > 3 else None
+
+                if args.use_proxy_data:
+                    target_audio_clean = chainer.forward_flat(true_params, order_idx=true_order_idx)
+                    # No augmentation on validation — measure true proxy performance
+                    target_audio = target_audio_clean
+                else:
+                    target_audio = batch[2].to(device)
 
                 outputs = model(target_audio)
                 
@@ -146,10 +205,15 @@ def train_inverter_audio(args):
                 loss_wave = loss_wave_fn(outputs['wave_logits'], true_wave_idx)
                 loss_order = loss_order_fn(outputs['order_logits'], true_order_idx)
                 
-                pi, mu = outputs['pi'], outputs['mu']
-                best_g = torch.argmax(pi, dim=1)
-                mu_best = mu[torch.arange(target_audio.shape[0]), best_g]
-                full_params_norm = assemble_full_params(mu_best, true_wave_idx, target_audio.shape[0], device)
+                pi, mu, sigma = outputs['pi'], outputs['mu'], outputs['sigma']
+                _, max_indices = torch.max(pi, dim=2)
+                max_indices = max_indices.unsqueeze(-1)
+                mu_best = torch.gather(mu, 2, max_indices).squeeze(-1)
+                
+                pred_sat_type = torch.argmax(outputs['sat_type_logits'], dim=1)
+                pred_eq8_types = [torch.argmax(logits, dim=1) for logits in outputs['eq8_type_logits']]
+                
+                full_params_norm = assemble_full_params(mu_best, true_wave_idx, pred_sat_type, pred_eq8_types, target_audio.shape[0], device)
                 pred_params_raw = denormalize_params(full_params_norm)
                 reconstructed_audio = chainer.forward_flat(pred_params_raw, order_idx=true_order_idx)
                 loss_audio = loss_audio_fn(reconstructed_audio, target_audio)
@@ -184,6 +248,8 @@ if __name__ == "__main__":
     parser.add_argument("--w_audio", type=float, default=1.0, help="Weight for audio reconstruction loss.")
     parser.add_argument("--w_wave", type=float, default=0.5, help="Weight for categorical wave prediction loss.")
     parser.add_argument("--w_order", type=float, default=0.5, help="Weight for categorical order prediction loss.")
+    parser.add_argument("--use_proxy_data", action="store_true", help="Use infinite proxy-generated data on-the-fly")
+    parser.add_argument("--proxy_virtual_size", type=int, default=100000, help="Virtual epoch size for infinite dataset")
     
     args = parser.parse_args()
     if args.effect != "full_chain":

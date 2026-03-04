@@ -1,39 +1,62 @@
-# OTT Proxy Model Improvement Plan
+# OTT Proxy Model — Architecture History & Status
 
-This document outlines the planned next steps for improving the spectral performance of the OTT proxy model, based on recent analysis.
+## ✅ Current Active Version: `ott.py` + `ott_proxy.pt`
 
-## Current Status:
-The OTT proxy model exhibits good envelope matching but struggles with spectral accuracy. The `DynamicsLoss` function has been adjusted to give equal weighting to spectral and envelope components (by changing the `loss_env` multiplier from `5.0` to `1.0`). The model is currently undergoing "Phase 2" training, where only the `residual_net` is being optimized to learn spectral corrections.
+The active OTT proxy uses a **gray-box architecture**:
+1. **Analytical DSP** (frozen): LR4 crossover filters, RMS envelope followers, soft-knee compander logic — all implemented as differentiable PyTorch operations.
+2. **Learned Residual Net** (trainable): A 128-channel 1D CNN that operates on raw audio to correct spectral differences between the analytical model and real Ableton OTT.
 
-## Next Steps:
+### Training
+- **Phase 1**: Train the full model end-to-end with `DynamicsLoss` to learn envelope/gain behavior.
+- **Phase 2**: Freeze the analytical DSP, train only the `residual_net` with `SpectralLoss` to refine frequency response.
 
-1.  **Complete Phase 2 Training:**
-    *   Allow the current Phase 2 training (with the adjusted `DynamicsLoss` weights) to run to completion or until early stopping is triggered.
-    *   The command to run this training is:
-        ```bash
-        python src/training/train_proxies.py --effect ott --phase2 --resume --device mps --dataset_dir dataset/ott_retrain/ott
-        ```
-        *(Note: Ensure `checkpoints/ott_proxy.pt` exists by renaming `ott_proxy_best_so_far.pt` to `ott_proxy.pt` before starting the training, if not already done.)*
+```bash
+# Phase 2 training (Colab)
+python src/training/train_proxies.py --effect ott --phase2 --device cuda --dataset_dir dataset/ott_retrain/ott
+```
 
-2.  **Evaluate the Improved Model:**
-    *   Once Phase 2 training is complete, re-evaluate the model's performance using both the scientific benchmarks and the listen test.
-    *   **Scientific Evaluation:**
-        ```bash
-        python src/utils/evaluate_proxy_scientific.py checkpoints/ott_proxy.pt
-        ```
-    *   **Listen Test:**
-        ```bash
-        python src/utils/generate_listen_test.py --effect ott --checkpoint checkpoints/ott_proxy.pt
-        ```
-    *   Compare the new Spectral Convergence and Log-Magnitude Loss scores against the targets, and perform subjective listening tests on the generated audio samples.
+### Evaluation Results
+| Metric               | Score | Target | Status |
+| -------------------- | ----- | ------ | ------ |
+| Envelope Loss        | 0.040 | < 0.15 | ✅      |
+| Spectral Convergence | 0.46  | < 0.20 | ❌      |
+| Log-Magnitude Loss   | 1.91  | < 0.60 | ❌      |
 
-3.  **If Spectral Performance Remains Insufficient (Conditional Step):**
-    *   **Increase `residual_net` Capacity:** If the evaluation in Step 2 shows that spectral performance is still not meeting targets, the `residual_net` might need more capacity.
-        *   Modify `src/models/proxy/ott.py` to add more convolutional layers to the `residual_net`, increase the number of channels (e.g., from 64 to 128), or experiment with different kernel sizes/dilations.
-        *   After modifying the architecture, restart Phase 2 training.
+> [!NOTE]
+> The spectral metrics remain high despite good subjective audio quality.
+> This is likely caused by phase misalignment from Ableton OTT's crossover filters
+> introducing a small latency not present in our proxy.
 
-4.  **Adjust Learning Rate (Conditional Step):**
-    *   If the model struggles to converge or improves very slowly even after increasing capacity, experiment with different learning rates (e.g., `1e-3`, `5e-5`) in the `train_proxies.py` script.
-        *   Modify the `--lr` argument in the training command.
+---
 
-This iterative approach should help systematically improve the OTT proxy's spectral accuracy.
+## 🧪 Alternative: `ott_stft_conditioned.py` + `ott_proxy_cond.pt`
+
+An experimental architecture that processes audio in the **frequency domain**:
+1. Same gray-box DSP as above.
+2. Converts output to STFT spectrogram → runs through a **2D Conv U-Net with FiLM conditioning** (the 7 OTT parameters are injected into the bottleneck) → converts back via ISTFT.
+3. Trained with `VectorizedMultiScaleSpectralLoss` for balanced frequency coverage.
+
+### Evaluation Results
+| Metric               | Score | Target | Status |
+| -------------------- | ----- | ------ | ------ |
+| Envelope Loss        | 0.041 | < 0.15 | ✅      |
+| Spectral Convergence | 0.47  | < 0.20 | ❌      |
+| Log-Magnitude Loss   | 1.54  | < 0.60 | ❌      |
+
+### Tradeoffs
+- **Pro**: Better Log-Magnitude Loss (1.54 vs 1.91).
+- **Con**: Significantly slower due to STFT/ISTFT and 2D convolutions. Not recommended for Encoder training where the proxy runs thousands of times per epoch.
+
+```bash
+# Training (Colab)
+python src/training/train_proxies.py --effect ott --phase2 --stft_cond --device cuda --dataset_dir dataset/ott_retrain/ott
+
+# Evaluation
+python src/utils/evaluate_proxy_scientific.py checkpoints/ott_proxy_cond.pt --stft_cond
+python src/utils/generate_listen_test.py --effect ott --checkpoint checkpoints/ott_proxy_cond.pt --stft_cond
+```
+
+---
+
+## Decision
+We are using `ott.py` + `ott_proxy.pt` for Encoder training (Strategy B) due to its speed advantage. The conditioned STFT variant is preserved as `ott_proxy_cond.pt` for potential future use.

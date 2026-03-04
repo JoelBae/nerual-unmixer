@@ -12,6 +12,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from src.data.dataset import NeuralProxyDataset
+from src.models.losses import SpectralLoss, DynamicsLoss, VectorizedMultiScaleSpectralLoss
 
 # Import all our proxies
 from src.models.proxy.ddsp_modules import OperatorProxy
@@ -19,9 +20,10 @@ from src.models.proxy.saturator import SaturatorProxy
 from src.models.proxy.eq8 import EQEightProxy
 from src.models.proxy.ott import OTTProxy
 from src.models.proxy.ott_stft import OTTSTFTProxy
+from src.models.proxy.ott_stft_conditioned import OTTSTFTConditionedProxy
 from src.models.proxy.reverb import ReverbProxy
 
-def get_proxy_model(effect_name, use_stft=False):
+def get_proxy_model(effect_name, use_stft=False, use_stft_cond=False):
     name = effect_name.lower()
     if name == "operator":
         return OperatorProxy()
@@ -30,7 +32,12 @@ def get_proxy_model(effect_name, use_stft=False):
     elif name == "eq8":
         return EQEightProxy()
     elif name == "ott":
-        return OTTSTFTProxy() if use_stft else OTTProxy()
+        if use_stft_cond:
+            return OTTSTFTConditionedProxy()
+        elif use_stft:
+            return OTTSTFTProxy()
+        else:
+            return OTTProxy()
     elif name == "reverb":
         return ReverbProxy()
     else:
@@ -57,20 +64,21 @@ def train_proxy(effect_name, dataset_dir, batch_size=32, epochs=100, lr=1e-3, de
     print(f"Loaded {len(dataset_train)} Training / {len(dataset_val)} Validation samples")
     
     # 2. Setup Model, Loss, and Optimizer
-    model = get_proxy_model(effect_name, hasattr(args, 'stft') and args.stft).to(device)
+    stft_flag = hasattr(args, 'stft') and args.stft
+    stft_cond_flag = hasattr(args, 'stft_cond') and args.stft_cond
+    model = get_proxy_model(effect_name, stft_flag, stft_cond_flag).to(device)
     if device == "cuda":
         # The model is not manually cast to half(), autocast will handle it.
         pass
     
-    if effect_name.lower() == "ott":
-        from src.models.losses import DynamicsLoss
-        criterion = DynamicsLoss().to(device)
-    elif effect_name.lower() in ["reverb"]:
-        from src.models.losses import VectorizedMultiScaleSpectralLoss
+    # Choose Loss Function
+    if stft_cond_flag:
+        # Multi-scale explicitly punishes transients and sub-bass equally
         criterion = VectorizedMultiScaleSpectralLoss().to(device)
     else:
-        from src.models.losses import SpectralLoss
         criterion = SpectralLoss().to(device)
+        
+    dynamics_criterion = DynamicsLoss().to(device)
         
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     
@@ -92,7 +100,7 @@ def train_proxy(effect_name, dataset_dir, batch_size=32, epochs=100, lr=1e-3, de
         use_cosine = False
     
     os.makedirs("checkpoints", exist_ok=True)
-    suffix = "_stft" if hasattr(args, 'stft') and args.stft else ""
+    suffix = "_cond" if stft_cond_flag else ("_stft" if stft_flag else "")
     save_path = f"checkpoints/{effect_name}_proxy{suffix}.pt"
     
     if resume and os.path.exists(save_path):
@@ -221,7 +229,8 @@ if __name__ == "__main__":
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--phase2", action="store_true", help="Freeze dynamics, train only spectral correction.")
-    parser.add_argument("--stft", action="store_true", help="Use the new STFT-based architecture for OTT.")
+    parser.add_argument("--stft", action="store_true", help="Use the old STFT-based architecture for OTT.")
+    parser.add_argument("--stft_cond", action="store_true", help="Use the new Parameter-Conditioned STFT-based architecture for OTT.")
     parser.add_argument("--dataset_dir", type=str, default=None, help="Path to the dataset directory.")
     
     args = parser.parse_args()

@@ -13,19 +13,20 @@ from src.models.proxy.ott import OTTProxy
 from src.models.proxy.ott_stft import OTTSTFTProxy
 from src.data.dataset import NeuralProxyDataset
 from src.models.losses import SpectralLoss
+from src.training.train_proxies import get_proxy_model
 
-def evaluate_scientific(checkpoint_path="checkpoints/ott_proxy(2).pt", batch_size=32, use_stft=False):
-    print(f"--- Scientific Performance Review: OTT Proxy ---")
+def review_spectral(effect_name, checkpoint_path, use_stft=False, use_stft_cond=False):
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+    print(f"--- Scientific Performance Review: {effect_name.upper()} Proxy ---")
     
-    # 1. Load Model
-    model = OTTSTFTProxy().to(device) if use_stft else OTTProxy().to(device)
+    # 1. Load Model dynamically based on flag
+    model = get_proxy_model(effect_name, use_stft, use_stft_cond).to(device)
     model.load_state_dict(torch.load(checkpoint_path, map_location=device, weights_only=True))
     model.eval()
     
     # 2. Setup Data
-    dataset = NeuralProxyDataset(effect_name="ott", dataset_dir="dataset/ott", split="val", preload=False)
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=4)
+    dataset = NeuralProxyDataset(effect_name=effect_name, dataset_dir=f"dataset/{effect_name}", split="val", preload=False)
+    loader = DataLoader(dataset, batch_size=32, shuffle=False, num_workers=4)
     
     # 3. Individual Loss Components
     # We use our optimized SpectralLoss but track components
@@ -97,7 +98,9 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("checkpoint", type=str, nargs='?', default="checkpoints/ott_proxy(2).pt")
-    parser.add_argument("--stft", action="store_true", help="Evaluate the new STFT-based architecture")
+    parser.add_argument("--effect", type=str, default="ott")
+    parser.add_argument("--stft", action="store_true", help="Load the STFT version of the OTT Proxy")
+    parser.add_argument("--stft_cond", action="store_true", help="Load the Conditioned STFT version of the OTT Proxy")
     args = parser.parse_args()
     
-    evaluate_scientific(checkpoint_path=args.checkpoint, use_stft=args.stft)
+    review_spectral(args.effect, args.checkpoint, args.stft, args.stft_cond)
