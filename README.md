@@ -11,8 +11,8 @@ The Audio-Chain Estimation Network (ACEN) is a deep learning system designed to 
 The system employs a **Hybrid Analysis-by-Synthesis** approach. It combines a direct prediction network with a differentiable DSP proxy graph to enable end-to-end self-supervised learning without rigid parameter datasets.
 
 ### 1. The Encoder & Heads
-*   **Input**: Log-Mel Spectrogram of the target audio.
-*   **Model**: 1D Convolutional Neural Network with Global Average Pooling feeding into a Transformer Decoder.
+*   **Input**: Raw Stereo Audio Waveform.
+*   **Model**: 1D Convolutional Neural Network operating purely in the time-domain, allowing the model to capture geometric saturation clipping and microscopic phase-shifts that are typically erased by standard 2D Spectrogram representations. This feeds into a Transformer Decoder.
 *   **Outputs**: ACEN predicts **63 exact parameters** separated into:
     *   **Continuous Knobs**: Mixture Density Networks (MDN) map uncertainty for parameters like Reverb Decay, OTT Thresholds, and EQ Frequencies.
     *   **Categorical Switches**: Classifiers predict Oscillator Waveform types, Saturator routing shapes, and EQ filter modes.
