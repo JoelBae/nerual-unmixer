@@ -180,9 +180,16 @@ def train_inverter_audio(args):
         ckpt = torch.load(args.resume_checkpoint, map_location=device)
         if 'model_state_dict' in ckpt:
             model.load_state_dict(ckpt['model_state_dict'])
-            start_epoch = ckpt.get('epoch', 0)
             start_step = ckpt.get('step', 0)
-            print(f"✅ Recovered Model State (Epoch {start_epoch}, Step {start_step})")
+            
+            # Recalculate start_epoch based on the loaded step and current dataloader size
+            steps_per_epoch = len(train_loader)
+            if steps_per_epoch > 0:
+                start_epoch = start_step // steps_per_epoch
+            else:
+                start_epoch = ckpt.get('epoch', 0)
+                
+            print(f"✅ Recovered Model State (Recalculated Epoch {start_epoch}, Step {start_step})")
         else:
             # Fallback for old checkpoint format
             model.load_state_dict(ckpt)
@@ -238,21 +245,18 @@ def train_inverter_audio(args):
             true_order_idx = batch[3].to(device) if len(batch) > 3 else None
             
             # V8 Autoregressive Target Audio Generation
-            # Convert true_order_idx (Batch, 8) to a string sequence for the ProxyChainer
-            target_seq = None
+            # Convert true_order_idx (Batch, 8) to synthetic 1-hot logits for the Multiplexer
+            true_order_logits = None
             if true_order_idx is not None:
-                token_to_name = {0: 'saturator', 1: 'eq8', 2: 'ott', 3: 'reverb'}
-                first_seq = true_order_idx[0].tolist()
-                target_seq = ['operator']
-                for t in first_seq:
-                    if t == 4: break # EOS
-                    if t in token_to_name: target_seq.append(token_to_name[t])
+                # Use * 15.0 to prevent FP16/FP32 overflow in softmax while remaining confidently hard
+                true_order_logits = F.one_hot(true_order_idx, num_classes=5).float() * 15.0
             
             # Generate or load target audio
             if args.use_proxy_data:
                 with torch.no_grad():
-                    # Generate identical batch audio using the target_seq
-                    target_audio_clean = chainer.forward_flat(true_params, sequence=target_seq)
+                    with torch.cuda.amp.autocast():
+                        # Generate batch audio using the differentiable multiplexer to support varying routes per batch item
+                        target_audio_clean = chainer.forward_flat(true_params, order_logits=true_order_logits).float()
                     # Apply Domain Randomization to what the Inverter SEES
                     target_audio = augmentor(target_audio_clean)
             else:
@@ -443,58 +447,61 @@ def train_inverter_audio(args):
                     # Convert true routing order into synthetic 1-hot logits for the Multiplexer
                     true_order_logits = None
                     if true_order_idx is not None:
-                        true_order_logits = F.one_hot(true_order_idx, num_classes=5).float() * 100.0
+                        true_order_logits = F.one_hot(true_order_idx, num_classes=5).float() * 15.0
                         
-                    target_audio_clean = chainer.forward_flat(
-                        true_params, 
-                        order_idx=None, 
-                        wave_logits=None, 
-                        order_logits=true_order_logits
-                    )
+                    with torch.cuda.amp.autocast():
+                        target_audio_clean = chainer.forward_flat(
+                            true_params, 
+                            order_idx=None, 
+                            wave_logits=None, 
+                            order_logits=true_order_logits
+                        ).float()
                     # No augmentation on validation — measure true proxy performance
                     target_audio = target_audio_clean
                 else:
                     target_audio = batch[2].to(device)
 
-                outputs = model(target_audio)
+                with torch.cuda.amp.autocast():
+                    outputs = model(target_audio)
                 
                 true_wave_idx = true_params[:, 1].long()
-                loss_wave = loss_wave_fn(outputs['wave_logits'], true_wave_idx)
+                loss_wave = loss_wave_fn(outputs['wave_logits'].float(), true_wave_idx)
                 
                 # Saturator Type
                 true_sat_type_idx = true_params[:, 17].long()
-                loss_sat_type = loss_wave_fn(outputs['sat_type_logits'], true_sat_type_idx)
+                loss_sat_type = loss_wave_fn(outputs['sat_type_logits'].float(), true_sat_type_idx)
                 
                 # EQ8 Filter Types (8 bands)
                 loss_eq8_type = 0
                 for i in range(8):
                     true_type_idx = true_params[:, 21 + i*4].long()
-                    loss_eq8_type += loss_wave_fn(outputs['eq8_type_logits'][i], true_type_idx)
+                    loss_eq8_type += loss_wave_fn(outputs['eq8_type_logits'][i].float(), true_type_idx)
                 loss_eq8_type = loss_eq8_type / 8.0
                 
                 if true_order_idx is not None:
-                    loss_order = loss_order_fn(outputs['order_logits'].view(-1, 5), true_order_idx.view(-1))
+                    loss_order = loss_order_fn(outputs['order_logits'].float().view(-1, 5), true_order_idx.view(-1))
                 else:
                     loss_order = torch.tensor(0.0, device=device)
                 
-                pi, mu, sigma = outputs['pi'], outputs['mu'], outputs['sigma']
+                pi, mu, sigma = outputs['pi'].float(), outputs['mu'].float(), outputs['sigma'].float()
                 _, max_indices = torch.max(pi, dim=2)
                 max_indices = max_indices.unsqueeze(-1)
                 mu_best = torch.gather(mu, 2, max_indices).squeeze(-1)
                 
                 # Validation is ALWAYS unlocked to measure true model performance
-                pred_wave_idx = torch.argmax(outputs['wave_logits'], dim=1)
-                pred_sat_type = torch.argmax(outputs['sat_type_logits'], dim=1)
-                pred_eq8_types = [torch.argmax(logits, dim=1) for logits in outputs['eq8_type_logits']]
+                pred_wave_idx = torch.argmax(outputs['wave_logits'].float(), dim=1)
+                pred_sat_type = torch.argmax(outputs['sat_type_logits'].float(), dim=1)
+                pred_eq8_types = [torch.argmax(logits.float(), dim=1) for logits in outputs['eq8_type_logits']]
                 
                 full_params_norm = assemble_full_params(mu_best, pred_wave_idx, pred_sat_type, pred_eq8_types, target_audio.shape[0], device)
                 pred_params_raw = denormalize_params(full_params_norm)
                 
-                reconstructed_audio = chainer.forward_flat(
-                    pred_params_raw, 
-                    wave_logits=outputs['wave_logits'],
-                    order_logits=outputs['order_logits']
-                )
+                with torch.cuda.amp.autocast():
+                    reconstructed_audio = chainer.forward_flat(
+                        pred_params_raw, 
+                        wave_logits=outputs['wave_logits'],
+                        order_logits=outputs['order_logits']
+                    ).float()
                 loss_audio = loss_audio_fn(reconstructed_audio, target_audio)
                 
                 # RMS Loss - Tungsten Hardened
