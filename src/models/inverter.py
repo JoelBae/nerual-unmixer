@@ -34,17 +34,20 @@ class NeuralInverter(nn.Module):
             ClassificationHead(in_features=latent_dim, num_classes=8) for _ in range(8)
         ])
 
-        # Effect Order Permutation
-        self.order_head = ClassificationHead(in_features=latent_dim, num_classes=24)
+        # Effect Order Permutation (V8 Autoregressive Routing)
+        from src.models.heads.routing import AutoregressiveRoutingHead
+        self.order_head = AutoregressiveRoutingHead(latent_dim=latent_dim, num_tokens=5, max_len=8)
 
-    def forward(self, audio):
+    def forward(self, audio, target_sequence=None):
         latent = self.encoder(audio)
         
         pi, mu, sigma = self.mdn_head(latent)
         wave_logits = self.wave_head(latent)
         sat_type_logits = self.sat_type_head(latent)
         eq8_type_logits = [head(latent) for head in self.eq8_type_heads]
-        order_logits = self.order_head(latent)
+        
+        # Pass target_sequence for Teacher Forcing during V8 training
+        order_logits = self.order_head(latent, target_sequence)
         
         return {
             'pi': pi,
@@ -102,13 +105,18 @@ class NeuralInverter(nn.Module):
             # --- Reverb (Indices 60:63) ---
             results[:, 60:63] = cont_params[:, p:p+3]; p += 3
             
-            # 4. Decode Order Index
-            import itertools
-            effects = ['saturator', 'eq8', 'ott', 'reverb']
-            perms = list(itertools.permutations(effects))
-            order_idx = torch.argmax(outputs['order_logits'], dim=1)
-            # For simplicity, returning sequence for the FIRST item in the batch
-            predicted_sequence = ['operator'] + list(perms[order_idx[0]])
+            # 4. Decode Order Sequence (V8 Autoregressive)
+            # order_logits shape is (Batch, 8, 5)
+            # 0=Saturator, 1=EQ8, 2=OTT, 3=Reverb, 4=EOS
+            predicted_tokens = torch.argmax(outputs['order_logits'][0], dim=-1).tolist()
+            
+            token_to_name = {0: 'saturator', 1: 'eq8', 2: 'ott', 3: 'reverb'}
+            predicted_sequence = ['operator']
+            for token in predicted_tokens:
+                if token == 4: # EOS
+                    break
+                if token in token_to_name:
+                    predicted_sequence.append(token_to_name[token])
             
             # 5. Denormalize MDN outputs back to Ableton ranges
             from src.utils.normalization import denormalize_params

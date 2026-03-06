@@ -5,23 +5,24 @@ import math
 
 def fft_convolve(signal, kernel):
     """
-    Robust FFT-based convolution for differentiability and performance.
-    Fallback for when torchaudio.functional.fftconvolve is missing.
+    Robust FFT-based convolution with power-of-2 padding.
+    This prevents cuFFT_INTERNAL_ERROR on T4/L4 GPUs by avoiding 
+    non-standard FFT sizes.
     """
-    try:
-        import torchaudio.functional as taf
-        return taf.fftconvolve(signal, kernel, mode='full')
-    except (ImportError, AttributeError):
-        # Manual FFT Convolve
-        n_signal = signal.shape[-1]
-        n_kernel = kernel.shape[-1]
-        n_fft = n_signal + n_kernel - 1
-        
-        S = torch.fft.rfft(signal, n=n_fft)
-        K = torch.fft.rfft(kernel, n=n_fft)
-        Y = S * K
-        y = torch.fft.irfft(Y, n=n_fft)
-        return y
+    n_signal = signal.shape[-1]
+    n_kernel = kernel.shape[-1]
+    n_total = n_signal + n_kernel - 1
+    
+    # Force next power of 2 for stability
+    n_fft = 2**math.ceil(math.log2(n_total))
+    
+    S = torch.fft.rfft(signal, n=n_fft)
+    K = torch.fft.rfft(kernel, n=n_fft)
+    Y = S * K
+    y = torch.fft.irfft(Y, n=n_fft)
+    
+    # Trim to full convolution size or signal size as needed
+    return y[..., :n_total]
 
 class ReverbProxy(nn.Module):
     """
@@ -96,7 +97,14 @@ class ReverbProxy(nn.Module):
         return super().load_state_dict(state_dict, strict=strict)
     
     def _synthesize_ir(self, spectral_envelope, decay_rates, transients, decay_time, batch, device):
+        # Armor: Ensure max_decay is never NaN or Inf
+        decay_time = torch.nan_to_num(decay_time, nan=1.0, posinf=6.0, neginf=0.1)
         max_decay = torch.max(decay_time).item()
+        
+        # Guard against NaN-to-int conversion crash
+        if math.isnan(max_decay) or math.isinf(max_decay):
+            max_decay = 1.0
+            
         ir_length = min(int(max_decay * self.sr) + 1, self.max_ir_length)
         ir_length = max(ir_length, self.sr // 10)
         
@@ -134,7 +142,7 @@ class ReverbProxy(nn.Module):
         batch, channels, time = audio.shape
         device = audio.device
         
-        reverb_params = params[:, -3:]
+        reverb_params = torch.nan_to_num(params[:, -3:], nan=0.0)
         decay_time = torch.clamp(reverb_params[:, 0], 0.1, 6.0)
         dry_wet = torch.clamp(reverb_params[:, 2], 0.0, 1.0).view(batch, 1, 1)
         

@@ -1,8 +1,11 @@
 # Use the official PyTorch image with CUDA support
 FROM pytorch/pytorch:2.2.0-cuda12.1-cudnn8-runtime
 
-# Set the working directory
+# Set working directory
 WORKDIR /app
+
+# PyTorch Optimization for large FFTs/Convolutions
+ENV PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # Install system dependencies (libsndfile is required by torchaudio/pysoundfile)
 RUN apt-get update && apt-get install -y \

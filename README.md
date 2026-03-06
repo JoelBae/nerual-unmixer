@@ -1,55 +1,69 @@
-# Audio-Chain Estimation Network (ACEN)
+# Audio-Chain Estimation Network (ACEN) 🎛️
 
 **Inverse Signal Chain Estimation for Analysis-by-Synthesis**
 
-The Audio-Chain Estimation Network (ACEN) is a deep learning system designed to reverse-engineer synthesizer parameters from raw audio. It listens to a sound and predicts the exact configuration (oscillator, filters, effects) used to create it.
+The Audio-Chain Estimation Network (ACEN) is a deep learning system designed to reverse-engineer synthesizer parameters from raw audio. It listens to a sound and predicts the exact configuration (oscillator waveform, synth ADSR, filters, and audio effect routing) used to create it.
 
-## 🏗 Architecture Overview
+---
 
-The system employs a **Hybrid Analysis-by-Synthesis** approach. It combines a direct prediction network with a differentiable DSP proxy to enable end-to-end self-supervised learning.
+## 🏗 Architecture Overview (V9)
 
-### 1. The Encoder
-*   **Input**: Log-Mel Spectrogram of the effected audio.
-*   **Source Signal**: **White Noise** (or Chirp/Impulse). The system now assumes the input to the chain is a known, broadband signal, making the spectral characteristics of the output purely a result of the effects.
-*   **Model**: 1D CNN with Global Average Pooling.
-*   **Output**: A compact latent embedding vector $z$ representing the timbre and texture of the sound.
+The system employs a **Hybrid Analysis-by-Synthesis** approach. It combines a direct prediction network with a differentiable DSP proxy graph to enable end-to-end self-supervised learning without rigid parameter datasets.
 
-### 2. The Heads
-The embedding $z$ is split into three specialized prediction heads:
-*   **MDN Head**: Mixture Density Network for continuous parameters (Knobs), handling the multimodal uncertainty where multiple settings (e.g., specific Filter Cutoff vs. Waveform shape) can sound similar.
-*   **Classification Head**: Standard classifier for discrete choices (Switches/Modes).
-*   **Hyperbolic Sequence Decoder**: A GRU operating in **Poincaré Ball** space. This is critical for predicting the *ordered* chain of effects (e.g., `Distortion -> Reverb` vs `Reverb -> Distortion`), as hyperbolic geometry efficiently embeds hierarchical structures.
+### 1. The Encoder & Heads
+*   **Input**: Log-Mel Spectrogram of the target audio.
+*   **Model**: 1D Convolutional Neural Network with Global Average Pooling feeding into a Transformer Decoder.
+*   **Outputs**: ACEN predicts **63 exact parameters** separated into:
+    *   **Continuous Knobs**: Mixture Density Networks (MDN) map uncertainty for parameters like Reverb Decay, OTT Thresholds, and EQ Frequencies.
+    *   **Categorical Switches**: Classifiers predict Oscillator Waveform types, Saturator routing shapes, and EQ filter modes.
+    *   **Autoregressive Routing**: A sequence-to-sequence decoder paired with Differentiable Gumbel-Softmax multiplexing predicts the exact **order of the effects chain**. 
 
-### 3. The Modular Proxy System
-Instead of a monolithic "Black Box" synthesizer, V3 uses a library of **Independent Differentiable Neural Proxies**:
-*   **Training Strategy**: Each proxy is trained **separately** on its own dataset. This ensures high-fidelity simulation of each specific effect without interference from others.
-*   **Concept**: We use specialized Differentiable Digital Signal Processing (DDSP) and Neural Network architectures tailored to each specific device:
-    *   **Operator (Instrument Proxy)**: A fully mathematical, differentiable Additive Synthesizer. 
-    *   **Audio Effects Proxies**: We use **Gray-Box DDSP** techniques wherever possible:
-        *   **EQ Eight (Analytical DDSP)**: A pure-math biquad filter engine. Identical to Ableton's internal DSP.
-        *   **Reverb (LTI)**: An MLP predicts the Impulse Response decay curve, applied via FFT Convolution.
-        *   **Saturator (Non-Linear)**: A differentiable waveshaper or lightweight TCN.
-        *   **OTT (Dynamics)**: A differentiable multiband compressor.
-*   **Benefits**: This guarantees math-perfect audio processing with zero neural-hallucination artifacts, while still allowing gradients to flow end-to-end to train the Encoder.
+### 2. The Differentiable DSP Proxies
+Instead of treating Ableton Live as a "Black Box", ACEN utilizes a library of **Independent Differentiable Neural Proxies**. The predicted parameters are routed through these proxies to generate audio dynamically on the GPU:
+*   **Operator**: A mathematical, differentiable Additive Synthesizer. 
+*   **EQ Eight**: A pure-math biquad filter engine, identical to Ableton's DSP.
+*   **Reverb (LTI)**: An MLP predicting Impulse Response decay curves applied via FFT Convolution.
+*   **Saturator**: A differentiable waveshaper.
+*   **OTT (Dynamics)**: A differentiable multiband downward/upward compressor.
 
+All components are perfectly wrapped in PyTorch graphs, allowing loss gradients to flow from the final audio output backwards through the DSP chain to correct the CNN's parameter choices.
 
-## 🚀 Optimization Strategy
+---
 
-### Hybrid Loss Function
-$$ \mathcal{L}_{total} = \lambda_{MDN} \cdot \mathcal{L}_{NLL} + \lambda_{Spectral} \cdot \mathcal{L}_{Spectral} $$
-*   **NLL (Negative Log-Likelihood)**: Ensures the parameter distribution matches the ground truth.
-*   **Multi-Scale STFT Loss**: Self-supervised loss ensuring audio fidelity.
+## 🚀 Optimization & Training Strategy
 
-### Sim-to-Real Domain Randomization (New in V3)
-To bridge the gap between our PyTorch Proxies (Simulator) and Ableton Live (Reality), the Inverter is trained on an **Infinite On-The-Fly Proxy Dataset**.
-*   **Infinite Data**: Random Ableton parameters are generated on the CPU, and the audio is rendered dynamically on the GPU by the `ProxyChainer`.
-*   **Domain Randomization**: Every single generated audio sample is uniquely augmented (Random EQ, Random Gain, Phase Inversion, White Noise) before hitting the Inverter. This forces the Inverter to learn robust, structural DSP behaviors rather than overfitting to specific proxy frequency coloration.
+### Sim-to-Real Domain Randomization
+ACEN utilizes a pure **Sim-to-Real** pipeline.
+1.   An infinite number of random, valid parameter configurations are generated on the CPU.
+2.   `OnTheFlyProxyDataset` passes these configurations through the DSP Proxies to render the target audio directly in GPU memory.
+3.   An `AudioAugmentor` applies intense Domain Randomization (up to +3dB Gain, Phase-inversion, White Noise injection) to the target audio.
+This forces the model to learn structural acoustic reasoning instead of simply memorizing the exact math of the proxies.
 
-### Training Pipeline
+### Curriculum Learning (Teacher Forcing)
+To stabilize the massive 63-parameter graph, the training loop utilizes **Teacher Forcing**. For the first several epochs, the true categorical labels (like the correct signal chain order and waveform shape) are injected directly into the Proxy Chainer. This anchors the continuous parameters (like EQ frequencies) to reality before the routing training wheels are removed.
+
+### Multi-Resolution STFT Audio Loss
+Because categorical metrics (like guessing the wrong waveform) are highly discontinuous, ACEN's loss curve relies primarily on a Multi-Scale Spectrogram Distance function. Categorical accuracy metrics are tracked but mathematically silenced from the backpropagation, allowing the model to freely search for the best *sonic* matching parameter set regardless of the numerical path.
+
+---
+
+## ☁️ Google Cloud & MLOps
+
+ACEN is designed for scale. Given the massive memory footprint of calculating gradients for 64 simultaneous dynamically routed DSP chains, training runs are packaged via Docker and deployed natively to **NVIDIA L4 GPUs on Google Cloud Vertex AI**.
+
+*   **Mixed Precision (AMP)**: Full-scope `torch.cuda.amp.autocast()` wraps both the neural model inference and the massive DSP track generations, utilizing Nvidia TensorCores to run the chain in memory-efficient `FP16` while preserving mastering weights in `FP32`.
+*   **Experiment Tracking**: TensorBoard is deeply integrated to stream synchronous validation losses, accuracy curves, interactive Reconstructed Audio players, and live Spectrograms directly from the cloud to your local machine via `gcsfs` and Google Cloud Storage.
+
+---
+
+### Command Execution
 ```bash
-python -m src.training.train_proxies --effect <effect_name>
+# 1. Build and push the latest architecture to GCR
+gcloud builds submit --tag gcr.io/[PROJECT_ID]/inverter-audio:latest .
+
+# 2. Launch the Vertex AI Custom Batch Job
+gcloud ai custom-jobs create \
+  --region=us-central1 \
+  --display-name=inverter-v9-master \
+  ...
 ```
-
-### Inference-Time Finetuning (ITF)
-At inference time, the model actively refines its prediction by running Gradient Descent on the predicted parameters $\theta$ to minimize the Spectral Error for the specific input sample.
-

@@ -203,6 +203,8 @@ class OTTProxy(nn.Module):
         batch, channels, time_dim = audio.shape
         audio_in = audio * (10 ** (self.input_gain_db / 20.0))
         
+        # Armor: Ensure params are safe
+        params = torch.nan_to_num(params, nan=0.0)
         ott_params = params[:, -7:]
         amount = ott_params[:, 0].view(batch, 1, 1)
         

@@ -14,3 +14,5 @@ pysoundfile
 tqdm
 matplotlib
 tensorboard
+google-cloud-storage
+gcsfs

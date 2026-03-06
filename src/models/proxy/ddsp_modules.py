@@ -112,27 +112,31 @@ class OscWaveMapper(nn.Module):
         table[:, 0] = 1.0
         self.register_buffer("table", table)
 
-    def forward(self, wave_dial_normalized):
+    def forward(self, wave_dial_normalized=None, wave_logits=None):
         """
-        wave_dial_normalized: (batch, 1) - from 0.0 to 1.0
+        Original: wave_dial_normalized (batch, 1) - from 0.0 to 1.0 (for lerp)
+        New: wave_logits (batch, 128) - for soft weighted sum (differentiable)
         """
-        # Map 0-1 to 0-(num_entries-1)
+        if wave_logits is not None:
+            # Differentiable Discrete-Lookup (Gumbel-Softmax Trick)
+            # This forces the network to pick exactly ONE waveform (hard=True)
+            # during the forward pass so we don't blend Sine and Square waves (sounds bad),
+            # but allows continuous gradients to flow back during the backward pass.
+            # Weights: (batch, 128) - One-hot vector functionally
+            weights = torch.nn.functional.gumbel_softmax(wave_logits, tau=1.0, hard=True, dim=-1)
+            # table: (128, 64)
+            # result: (batch, 64)
+            return torch.matmul(weights, self.table)
+            
+        # Fallback to legacy lerp dial if no logits provided
         idx_float = wave_dial_normalized * (self.num_entries - 1)
-        
         idx_lower = torch.floor(idx_float).long()
         idx_upper = torch.ceil(idx_float).long()
-        
         alpha = idx_float - idx_lower.float()
-        
-        # Clamp indices
         idx_lower = torch.clamp(idx_lower, 0, self.num_entries - 1)
         idx_upper = torch.clamp(idx_upper, 0, self.num_entries - 1)
-        
-        # Gather (lookup)
         lower_vals = self.table[idx_lower.squeeze(1)]
         upper_vals = self.table[idx_upper.squeeze(1)]
-        
-        # Linear Interpolation (Lerp)
         return lower_vals * (1.0 - alpha) + upper_vals * alpha
 
 class DifferentiableAdditiveFilter(nn.Module):
@@ -199,7 +203,7 @@ class OperatorProxy(nn.Module):
         else:
             print(f"⚠️  Wave Table not found at {path}. Using default sine wave.")
 
-    def forward(self, params, note_off_time=1.0, num_samples=88200):
+    def forward(self, params, wave_logits=None, note_off_time=1.0, num_samples=88200):
         # Ensure 2D params
         if params.dim() == 1:
             params = params.unsqueeze(0)
@@ -225,8 +229,11 @@ class OperatorProxy(nn.Module):
         f0_modulated = f0.unsqueeze(2) * (2.0 ** (pitch_offset.unsqueeze(1) / 12.0))
 
         # Osc-A Wave Mapping
-        wave_dial_normalized = params[:, 1:2] / 127.0
-        harmonic_amplitudes = self.wave_mapper(wave_dial_normalized)
+        if wave_logits is not None:
+             harmonic_amplitudes = self.wave_mapper(wave_logits=wave_logits)
+        else:
+             wave_dial_normalized = params[:, 1:2] / 127.0
+             harmonic_amplitudes = self.wave_mapper(wave_dial_normalized=wave_dial_normalized)
 
         # Filter
         filter_dial = params[:, 2:3] / 127.0

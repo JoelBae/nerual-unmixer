@@ -27,11 +27,12 @@ class SpectralLoss(nn.Module):
         y_stft = torch.stft(y_flat, n_fft=self.n_fft, hop_length=self.hop_length, 
                            window=self.window, return_complex=True)
         
-        x_mag = torch.abs(x_stft) + 1e-7
-        y_mag = torch.abs(y_stft) + 1e-7
+        x_mag = torch.abs(x_stft) + 1e-3
+        y_mag = torch.abs(y_stft) + 1e-3
         
-        # 2. Spectral Convergence
-        loss_sc = torch.norm(y_mag - x_mag, p='fro') / torch.norm(y_mag, p='fro')
+        # 2. Spectral Convergence (Tungsten Hardened)
+        loss_sc = torch.norm(y_mag - x_mag, p='fro') / (torch.norm(y_mag, p='fro') + 1e-4)
+        loss_sc = torch.clamp(loss_sc, max=100.0)
         
         # 3. Log-Magnitude
         loss_mag = F.l1_loss(torch.log(x_mag), torch.log(y_mag))
@@ -63,11 +64,12 @@ class VectorizedMultiScaleSpectralLoss(nn.Module):
             xs = torch.stft(x_f, n, hop, window=win, return_complex=True)
             ys = torch.stft(y_f, n, hop, window=win, return_complex=True)
             
-            xm = torch.abs(xs) + 1e-7
-            ym = torch.abs(ys) + 1e-7
+            xm = torch.abs(xs) + 1e-3
+            ym = torch.abs(ys) + 1e-3
             
-            # SC + Mag
-            sc = torch.norm(ym - xm, p='fro') / torch.norm(ym, p='fro')
+            # SC + Mag (Tungsten Hardened)
+            sc = torch.norm(ym - xm, p='fro') / (torch.norm(ym, p='fro') + 1e-4)
+            sc = torch.clamp(sc, max=100.0)
             mag = F.l1_loss(torch.log(xm), torch.log(ym))
             total_loss += sc + mag
             

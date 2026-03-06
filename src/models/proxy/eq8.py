@@ -46,6 +46,11 @@ class EQEightProxy(nn.Module):
         """
         Compute biquad filter coefficients for ALL filter types (0-7).
         """
+        # Armor: Ensure no NaNs hit the biquad math
+        freq_hz = torch.nan_to_num(freq_hz, nan=1000.0)
+        q = torch.nan_to_num(q, nan=0.707)
+        gain_db = torch.nan_to_num(gain_db, nan=0.0)
+        
         # Clamp to safe DSP ranges
         freq_hz = torch.clamp(freq_hz, 20.0, self.sr / 2 - 100)
         q = torch.clamp(q, 0.1, 18.0)
