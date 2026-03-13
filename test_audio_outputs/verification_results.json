@@ -1,0 +1,15 @@
+{
+    "vital": {
+        "alpha": {
+            "oscillator_1_level": 0.18361697472970717,
+            "oscillator_1_wave_frame": 0.05715243983845968,
+            "filter_1_cutoff": 0.011870359660017836,
+            "filter_1_resonance": -0.15706917920596597,
+            "envelope_1_attack": -0.33274623701552647,
+            "envelope_1_decay": 0.0,
+            "envelope_1_sustain": 0.0,
+            "envelope_1_release": -0.029654777651314912
+        },
+        "epsilon": 1481.1430415922755
+    }
+}
